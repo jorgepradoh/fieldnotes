@@ -1,0 +1,42 @@
+:root {
+  --bg: #101218;
+  --surface: #181b24;
+  --surface-2: #20242f;
+  --border: #2a2f3d;
+  --text: #e8ebf4;
+  --text-dim: #98a0b3;
+  --accent: #7aa2f7;
+  --danger: #f7768e;
+  --radius: 10px;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
