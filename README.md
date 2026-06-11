@@ -34,8 +34,8 @@ you can rearrange — or extend with your own.
 ### Roadmap
 
 1. ~~**Module system** — registry, dashboard grid, layout persistence~~ ✓
-2. Search + results browser modules (Semantic Scholar first) *(current)*
-3. Reader module (PDF + markdown)
+2. ~~Search + results browser modules (Semantic Scholar first)~~ ✓
+3. Reader module (PDF + markdown) *(current)*
 4. AI synthesis module — "state of the field" briefs from top-N results
 5. Chat-with-paper, citation graph, community modules
 

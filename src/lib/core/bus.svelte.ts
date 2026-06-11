@@ -4,9 +4,11 @@
  * Every event also lands in `busLog` (reactive), which the debug module renders.
  */
 
+import type { Paper } from "$lib/sources/types";
+
 export interface BusEvents {
   "search:query": { query: string };
-  "paper:selected": { paperId: string; title: string };
+  "paper:selected": { paper: Paper };
   "pomodoro:phase": { phase: "work" | "break" };
 }
 
