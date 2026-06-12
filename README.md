@@ -35,8 +35,8 @@ you can rearrange — or extend with your own.
 
 1. ~~**Module system** — registry, dashboard grid, layout persistence~~ ✓
 2. ~~Search + results browser modules (Semantic Scholar first)~~ ✓
-3. Reader module (PDF + markdown) *(current)*
-4. AI synthesis module — "state of the field" briefs from top-N results
+3. ~~Reader module (PDF in-app via PDF.js)~~ ✓ — local PDF/markdown files still pending
+4. AI synthesis module — "state of the field" briefs from top-N results *(current)*
 5. Chat-with-paper, citation graph, community modules
 
 ## Writing a module
