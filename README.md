@@ -87,4 +87,7 @@ npm run tauri dev
 
 ## Status
 
-Early scaffold — nothing usable yet. Feedback and ideas welcome via issues.
+Early but usable. The module system, Semantic Scholar search, and the in-app
+PDF reader work today; a v0.1.0 desktop build is published under Releases
+(unsigned — on macOS, right-click → Open the first time). Feedback and ideas
+welcome via issues.
