@@ -10,6 +10,7 @@ export interface BusEvents {
   "search:query": { query: string };
   "paper:selected": { paper: Paper };
   "pomodoro:phase": { phase: "work" | "break" };
+  "app:error": { source: string; message: string };
 }
 
 export type BusEventName = keyof BusEvents;

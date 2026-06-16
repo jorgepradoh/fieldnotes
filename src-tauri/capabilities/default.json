@@ -9,7 +9,13 @@
     "store:default",
     {
       "identifier": "http:default",
-      "allow": [{ "url": "https://**" }]
-    }
+      "allow": [
+        { "url": "https://**" },
+        { "url": "http://localhost:*" }
+      ]
+    },
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "core:window:allow-set-fullscreen"
   ]
 }

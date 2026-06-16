@@ -3,6 +3,13 @@
   import { workspace } from "$lib/core/workspace.svelte";
 
   let open = $state(false);
+  let triggerEl = $state<HTMLButtonElement | null>(null);
+
+  const menuStyle = $derived.by(() => {
+    if (!open || !triggerEl) return "";
+    const r = triggerEl.getBoundingClientRect();
+    return `top:${r.bottom + 6}px;right:${window.innerWidth - r.right}px`;
+  });
 
   function isPlaced(moduleId: string, multiInstance: boolean | undefined): boolean {
     return !multiInstance && workspace.instances.some((it) => it.moduleId === moduleId);
@@ -15,11 +22,11 @@
 </script>
 
 <div class="picker">
-  <button class="add" onclick={() => (open = !open)}>+ Add module</button>
+  <button bind:this={triggerEl} class="add" onclick={() => (open = !open)}>+ Add module</button>
 
   {#if open}
     <button class="backdrop" onclick={() => (open = false)} aria-label="Close menu"></button>
-    <ul class="menu">
+    <ul class="menu" style={menuStyle}>
       {#each allModules() as def (def.id)}
         <li>
           <button
@@ -69,10 +76,8 @@
   }
 
   .menu {
-    position: absolute;
-    right: 0;
-    top: calc(100% + 6px);
-    z-index: 50;
+    position: fixed;
+    z-index: 200;
     margin: 0;
     padding: 0.3rem;
     list-style: none;

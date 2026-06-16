@@ -19,7 +19,7 @@
   {:else}
     <ul>
       {#each entries as entry (entry.seq)}
-        <li>
+        <li class:err={entry.name === "app:error"}>
           <span class="time">{entry.time}</span>
           <span class="name">{entry.name}</span>
           <code>{JSON.stringify(entry.payload)}</code>
@@ -83,6 +83,17 @@
   .name {
     color: var(--accent);
     font-weight: 600;
+  }
+
+  li.err {
+    background: color-mix(in srgb, var(--danger) 8%, transparent);
+    border-radius: 4px;
+    padding: 0.1rem 0.25rem;
+    margin: 0 -0.25rem;
+  }
+
+  li.err .name {
+    color: var(--danger);
   }
 
   code {

@@ -1,5 +1,12 @@
 import type { Component } from "svelte";
 
+export interface AppSettings {
+  anthropicKey?: string;
+  ollamaUrl?: string;
+  ollamaModel?: string;
+  vimMode?: boolean;
+}
+
 /** Position and size on the dashboard grid, in grid units. */
 export interface GridRect {
   x: number;

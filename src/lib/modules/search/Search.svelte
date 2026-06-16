@@ -2,18 +2,29 @@
   import { emit } from "$lib/core/bus.svelte";
   import { workspace } from "$lib/core/workspace.svelte";
   import { semanticScholar } from "$lib/sources/semanticScholar";
-  import type { Paper } from "$lib/sources/types";
+  import { arxiv } from "$lib/sources/arxiv";
+  import { zotero } from "$lib/sources/zotero";
+  import type { Paper, PaperSource, SearchOptions } from "$lib/sources/types";
   import type { ModuleInstance } from "$lib/core/types";
 
   let { instance }: { instance: ModuleInstance } = $props();
 
   const PAGE = 20;
 
+  const SOURCES: Record<string, PaperSource> = {
+    "semantic-scholar": semanticScholar,
+    arxiv,
+    zotero,
+  };
+
   // Settings hydrate initial state once; edits flow back via updateSettings.
   // svelte-ignore state_referenced_locally
   const initial = instance.settings;
   let query = $state(String(initial.query ?? ""));
   let apiKey = $state(String(initial.apiKey ?? ""));
+  let sourceName = $state(String(initial.source ?? "semantic-scholar"));
+
+  const activeSource = $derived(SOURCES[sourceName] ?? semanticScholar);
 
   let showSettings = $state(false);
   let papers = $state<Paper[]>([]);
@@ -32,10 +43,9 @@
     status = offset === 0 ? "searching" : "paging";
     error = "";
     try {
-      const result = await semanticScholar.search(
-        { query: query.trim(), limit: PAGE, offset },
-        { signal: controller.signal, apiKey: apiKey.trim() || undefined },
-      );
+      const opts: SearchOptions = { signal: controller.signal };
+      if (sourceName === "semantic-scholar") opts.apiKey = apiKey.trim() || undefined;
+      const result = await activeSource.search({ query: query.trim(), limit: PAGE, offset }, opts);
       papers = offset === 0 ? result.papers : [...papers, ...result.papers];
       total = result.total;
       nextOffset = result.nextOffset;
@@ -64,6 +74,15 @@
 
   function saveKey(): void {
     workspace.updateSettings(instance.instanceId, { apiKey: apiKey.trim() });
+  }
+
+  function changeSource(e: Event): void {
+    sourceName = (e.target as HTMLSelectElement).value;
+    workspace.updateSettings(instance.instanceId, { source: sourceName });
+    papers = [];
+    total = 0;
+    nextOffset = null;
+    searched = false;
   }
 
   async function openExternal(url: string): Promise<void> {
@@ -102,9 +121,21 @@
   {#if showSettings}
     <div class="settings">
       <label>
-        Semantic Scholar API key <small>(optional — lifts the shared rate limit)</small>
-        <input type="password" bind:value={apiKey} onchange={saveKey} placeholder="none" />
+        Source
+        <select value={sourceName} onchange={changeSource}>
+          <option value="semantic-scholar">Semantic Scholar</option>
+          <option value="arxiv">arXiv</option>
+          <option value="zotero">Zotero (local)</option>
+        </select>
       </label>
+      {#if sourceName === "semantic-scholar"}
+        <label>
+          API key <small>(optional — lifts the shared rate limit)</small>
+          <input type="password" bind:value={apiKey} onchange={saveKey} placeholder="none" />
+        </label>
+      {:else if sourceName === "zotero"}
+        <p class="zotero-hint">Searches your local Zotero library. Zotero must be running.</p>
+      {/if}
     </div>
   {/if}
 
@@ -113,7 +144,7 @@
   {/if}
 
   {#if papers.length > 0}
-    <p class="count">{total.toLocaleString()} results · Semantic Scholar</p>
+    <p class="count">{total.toLocaleString()} results · {activeSource.name}</p>
     <ul>
       {#each papers as paper (paper.id)}
         <li>
@@ -162,12 +193,13 @@
       </button>
     {/if}
   {:else if status === "searching"}
-    <p class="empty">Searching Semantic Scholar…</p>
+    <p class="empty">Searching {activeSource.name}…</p>
   {:else if searched && status === "idle"}
     <p class="empty">No results for that query.</p>
   {:else if status !== "error"}
     <p class="empty">
-      Search 200M+ papers. Selecting one emits <code>paper:selected</code> for other modules.
+      Search papers via Semantic Scholar or arXiv. Selecting one emits
+      <code>paper:selected</code> for other modules.
     </p>
   {/if}
 </div>
@@ -248,8 +280,31 @@
     color: var(--text-dim);
   }
 
-  .settings input {
+  .zotero-hint {
+    margin: 0;
+    font-size: 0.73rem;
+    color: var(--text-dim);
+    line-height: 1.4;
+  }
+
+  .settings input,
+  .settings select {
     background: var(--surface);
+  }
+
+  .settings select {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 0.35rem 0.5rem;
+    font-size: 0.82rem;
+    outline: none;
+    font-family: inherit;
+    cursor: pointer;
+  }
+
+  .settings select:focus {
+    border-color: var(--accent);
   }
 
   .error {

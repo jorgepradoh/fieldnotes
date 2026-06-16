@@ -4,6 +4,7 @@
  * Works without a key (shared rate pool, expect occasional 429s);
  * a free key via x-api-key lifts the limit.
  */
+import { tauriFetch } from "$lib/core/net";
 import type { Paper, PaperSource, SearchOptions, SearchParams, SearchResult } from "./types";
 
 const API = "https://api.semanticscholar.org/graph/v1";
@@ -69,7 +70,7 @@ export const semanticScholar: PaperSource = {
     const headers: Record<string, string> = {};
     if (opts.apiKey) headers["x-api-key"] = opts.apiKey;
 
-    const res = await fetch(url, { headers, signal: opts.signal });
+    const res = await tauriFetch(url, { headers, signal: opts.signal });
     if (res.status === 429) {
       throw new Error(
         "Rate limited by Semantic Scholar. Wait a moment and retry — or add a free API key in this module's settings.",

@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { ModuleDefinition, ModuleInstance } from "$lib/core/types";
+  import { zen } from "$lib/core/zen.svelte";
 
   let {
     def,
@@ -20,7 +21,7 @@
 
 <section class="frame">
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <header onpointerdown={onmovestart}>
+  <header class:zen-hidden={zen.active} onpointerdown={onmovestart}>
     <span class="icon">{def.icon}</span>
     <h2>{def.name}</h2>
     <button
@@ -37,7 +38,7 @@
     <Body {instance} />
   </div>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="resize" onpointerdown={onresizestart} title="Resize"></div>
+  <div class="resize" class:zen-hidden={zen.active} onpointerdown={onresizestart} title="Resize"></div>
 </section>
 
 <style>
@@ -63,10 +64,29 @@
     cursor: grab;
     touch-action: none;
     flex-shrink: 0;
+    max-height: 3rem;
+    overflow: hidden;
+    transition:
+      max-height 0.22s ease,
+      padding 0.22s ease,
+      opacity 0.18s ease,
+      border-color 0.18s ease;
   }
 
   header:active {
     cursor: grabbing;
+  }
+
+  header.zen-hidden {
+    max-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    opacity: 0;
+    border-bottom-color: transparent;
+  }
+
+  .resize.zen-hidden {
+    display: none;
   }
 
   .icon {

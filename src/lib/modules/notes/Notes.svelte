@@ -1,11 +1,11 @@
 <script lang="ts">
   import { marked } from "marked";
   import { workspace } from "$lib/core/workspace.svelte";
+  import Editor from "$lib/components/Editor.svelte";
   import type { ModuleInstance } from "$lib/core/types";
 
   let { instance }: { instance: ModuleInstance } = $props();
 
-  // Settings hydrate initial state once; edits flow back via updateSettings.
   // svelte-ignore state_referenced_locally
   let text = $state(String(instance.settings.text ?? ""));
   let preview = $state(false);
@@ -31,7 +31,7 @@
   {#if preview}
     <div class="preview">{@html html}</div>
   {:else}
-    <textarea bind:value={text} placeholder="Write markdown…" spellcheck="false"></textarea>
+    <Editor value={text} onchange={(t) => (text = t)} placeholder="Write markdown…" />
   {/if}
 </div>
 
@@ -62,19 +62,6 @@
   .toolbar button.on {
     background: var(--surface-2);
     color: var(--text);
-  }
-
-  textarea {
-    flex: 1;
-    resize: none;
-    border: none;
-    outline: none;
-    background: none;
-    color: var(--text);
-    padding: 0.6rem;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.82rem;
-    line-height: 1.5;
   }
 
   .preview {

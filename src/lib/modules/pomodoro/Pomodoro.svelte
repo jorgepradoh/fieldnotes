@@ -17,6 +17,11 @@
   const minutes = $derived(String(Math.floor(remaining / 60)).padStart(2, "0"));
   const seconds = $derived(String(remaining % 60).padStart(2, "0"));
 
+  const R = 40;
+  const CIRC = 2 * Math.PI * R; // ≈ 251.33
+  const totalSeconds = $derived((phase === "work" ? workMin : breakMin) * 60);
+  const dashoffset = $derived(CIRC * (1 - remaining / totalSeconds));
+
   $effect(() => {
     if (!running) return;
     const timer = setInterval(() => {
@@ -42,8 +47,25 @@
 </script>
 
 <div class="pomodoro" class:break={phase === "break"}>
-  <span class="phase">{phase === "work" ? "Focus" : "Break"}</span>
-  <span class="time">{minutes}:{seconds}</span>
+  <div class="ring-wrap">
+    <svg viewBox="0 0 100 100" aria-hidden="true">
+      <circle class="track" cx="50" cy="50" r={R} />
+      <circle
+        class="fill"
+        cx="50"
+        cy="50"
+        r={R}
+        stroke-dasharray={CIRC}
+        stroke-dashoffset={dashoffset}
+        transform="rotate(-90 50 50)"
+      />
+    </svg>
+    <div class="center">
+      <span class="phase">{phase === "work" ? "Focus" : "Break"}</span>
+      <span class="time">{minutes}:{seconds}</span>
+    </div>
+  </div>
+
   <div class="controls">
     <button class="primary" onclick={() => (running = !running)}>
       {running ? "Pause" : "Start"}
@@ -68,13 +90,55 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 0.5rem;
+    gap: 0.6rem;
     height: 100%;
     padding: 0.75rem;
   }
 
+  .ring-wrap {
+    position: relative;
+    width: min(100%, 160px);
+    aspect-ratio: 1;
+    flex-shrink: 1;
+    min-height: 0;
+  }
+
+  svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  .track {
+    fill: none;
+    stroke: var(--surface-2);
+    stroke-width: 7;
+  }
+
+  .fill {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 7;
+    stroke-linecap: round;
+    transition: stroke-dashoffset 0.9s linear;
+  }
+
+  .break .fill {
+    stroke: #9ece6a;
+  }
+
+  .center {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.1rem;
+  }
+
   .phase {
-    font-size: 0.75rem;
+    font-size: 0.65rem;
     text-transform: uppercase;
     letter-spacing: 0.12em;
     color: var(--accent);
@@ -85,9 +149,10 @@
   }
 
   .time {
-    font-size: 2.4rem;
+    font-size: 1.8rem;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
+    line-height: 1;
   }
 
   .controls {
@@ -114,7 +179,6 @@
   .durations {
     display: flex;
     gap: 0.8rem;
-    margin-top: 0.2rem;
   }
 
   label {
