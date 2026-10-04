@@ -75,19 +75,86 @@ Rules of the system:
 - Layout (drag, resize, packing, saving) is entirely the dashboard's job;
   modules just fill whatever box they're given.
 
-## Development
+## Running it
 
-Prerequisites: [Node](https://nodejs.org) ≥ 20, [Rust](https://rustup.rs), and
-on macOS the Xcode Command Line Tools.
+### Option 1 — download a build
+
+A v0.1.0 desktop build is published under Releases. It is unsigned, so on
+macOS right-click → Open the first time.
+
+### Option 2 — run from source (desktop app)
+
+Prerequisites:
+
+- [Node](https://nodejs.org) ≥ 20
+- [Rust](https://rustup.rs) (stable)
+- Platform libraries for Tauri 2 — see the
+  [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/):
+  Xcode Command Line Tools on macOS; WebView2 + MSVC build tools on Windows;
+  `webkit2gtk-4.1`, `libayatana-appindicator`, `librsvg` and a C toolchain on
+  Linux.
+
+```sh
+git clone https://github.com/jorgepradoh/fieldnotes.git
+cd fieldnotes
+npm install
+npm run tauri dev      # launches the desktop app with hot reload
+```
+
+### Option 3 — browser only (no Rust needed)
 
 ```sh
 npm install
-npm run tauri dev
+npm run dev            # http://localhost:1420
+```
+
+The UI runs in a plain browser with two differences: the layout is saved to
+`localStorage` instead of the app-data directory, and PDFs are fetched with
+the browser's `fetch`, so only publishers that send CORS headers will load.
+Search works either way.
+
+### Using it
+
+1. Click **Add module** and add *Paper Search* and *Reader* (plus *Notes*,
+   *Pomodoro*, *Debug* if you like).
+2. Search a topic; click a paper — it opens in the Reader with its abstract and
+   TL;DR, and the open-access PDF downloads in the background.
+3. Drag modules by their header and resize them; the layout is restored on
+   next launch.
+4. Semantic Scholar works without a key but shares a rate pool (occasional
+   429s). Add a free API key in the search module's settings to lift that.
+
+## Development
+
+```sh
+npm run tauri dev      # desktop app, hot reload
+npm run dev            # browser only
+npm run check          # svelte-check / TypeScript
+npm test               # vitest (grid packing, Semantic Scholar mapping)
+npm run build          # static frontend into ./build
+npm run tauri build    # packaged installer for your OS
+```
+
+### Project layout
+
+```
+src/lib/core/        module registry, event bus, grid maths, workspace state, storage, net
+src/lib/components/  Dashboard, ModuleFrame, ModulePicker
+src/lib/modules/     one folder per module (search, reader, notes, pomodoro, debug)
+src/lib/sources/     paper-source adapters + the shared Paper model
+src-tauri/           Rust shell (store, http and opener plugins; capabilities)
 ```
 
 ## Status
 
-Early but usable. The module system, Semantic Scholar search, and the in-app
-PDF reader work today; a v0.1.0 desktop build is published under Releases
-(unsigned — on macOS, right-click → Open the first time). Feedback and ideas
-welcome via issues.
+Early but usable (v0.1.0). Working today: module system with draggable,
+resizable, persisted layout; Semantic Scholar search; in-app PDF reader;
+notes, pomodoro and debug modules. **Not built yet:** the AI synthesis module,
+Anthropic/Ollama providers, other paper sources (arXiv, OpenAlex), a local
+library, local PDF/markdown files. The README's "Planned architecture" table
+describes intent, not current state. No CI yet. Feedback and ideas welcome via
+issues.
+
+## License
+
+MIT
