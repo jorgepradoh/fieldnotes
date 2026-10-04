@@ -54,3 +54,30 @@ local-first, and a vault is just a folder of `.md` files — no API needed.
 
 The BibTeX importer and local library (citekeys, metadata), AI briefs
 (markdown with `[n]` citations), and layouts (a vault-linked layout preset).
+
+## Follow-ups from the v0.2 work
+
+Smaller, concrete items that came up while building layouts, multi-source
+search, the AI Brief and the local library. Roughly in order of value.
+
+- **Strict content-security policy** for the webview (`csp` is currently
+  `null`). Everything untrusted is already sanitised or escaped, but a CSP is
+  the second line of defence. Needs trying in the real shell: Tauri's `ipc:`
+  origin, `worker-src blob:` for pdf.js, and pdf.js's font handling.
+- **API keys in the OS keychain** instead of plain JSON in the app-data folder
+  (a small Rust command or the `keyring` crate). Keys already never travel in
+  layout exports.
+- **Export the library** — BibTeX plus a zip of the stored files — so data isn't
+  only reachable through the app's webview storage.
+- **Direct lookup** in Paper Search: paste a DOI, arXiv id or URL and go to that
+  paper (all three APIs support it).
+- **Send a brief to Notes / the library** as a markdown item.
+- **Library organisation**: tags or collections, "read / unread", and full-text
+  search inside local PDFs via the pdf.js text layer.
+- **Drop a PDF onto a specific library row** to attach it (today: the ＋PDF
+  button).
+- **CI**: `npm run check`, `npm test`, `npm run build` on every push, and a
+  `tauri build` matrix for releases (signing/notarisation separately).
+- **Real-API contract tests** run on demand (not in CI) for the three paper
+  APIs, since the unit tests use fixtures.
+
