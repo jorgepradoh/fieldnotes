@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { loadPdfjs } from "$lib/core/pdf";
 
   let { data }: { data: Uint8Array } = $props();
 
@@ -14,11 +15,7 @@
 
     void (async () => {
       try {
-        const pdfjs = await import("pdfjs-dist");
-        pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-          "pdfjs-dist/build/pdf.worker.min.mjs",
-          import.meta.url,
-        ).toString();
+        const pdfjs = await loadPdfjs();
 
         // pdf.js transfers the buffer to its worker — hand it a copy.
         const doc = await pdfjs.getDocument({ data: data.slice() }).promise;

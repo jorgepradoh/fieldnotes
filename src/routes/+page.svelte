@@ -1,7 +1,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import Dashboard from "$lib/components/Dashboard.svelte";
+  import DropOverlay from "$lib/components/DropOverlay.svelte";
+  import LayoutMenu from "$lib/components/LayoutMenu.svelte";
   import ModulePicker from "$lib/components/ModulePicker.svelte";
+  import Toasts from "$lib/components/Toasts.svelte";
   import { workspace } from "$lib/core/workspace.svelte";
   import { registerBuiltinModules } from "$lib/modules";
 
@@ -16,7 +19,7 @@
   <header class="topbar">
     <span class="logo">fieldnotes</span>
     <span class="divider">/</span>
-    <span class="workspace">{workspace.name}</span>
+    {#if workspace.loaded}<LayoutMenu />{/if}
     <div class="spacer"></div>
     <ModulePicker />
   </header>
@@ -27,6 +30,9 @@
     {/if}
   </main>
 </div>
+
+<DropOverlay />
+<Toasts />
 
 <style>
   .app {
@@ -52,11 +58,6 @@
 
   .divider {
     color: var(--text-dim);
-  }
-
-  .workspace {
-    color: var(--text-dim);
-    font-size: 0.9rem;
   }
 
   .spacer {

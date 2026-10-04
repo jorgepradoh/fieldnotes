@@ -1,5 +1,7 @@
 <script lang="ts">
   import { busLog } from "$lib/core/bus.svelte";
+  import { stripSecrets } from "$lib/core/layouts";
+  import { getModule } from "$lib/core/registry";
   import { workspace } from "$lib/core/workspace.svelte";
   import type { ModuleInstance } from "$lib/core/types";
 
@@ -7,8 +9,16 @@
   let {}: { instance: ModuleInstance } = $props();
 
   const entries = $derived([...busLog].reverse());
+  // Same secret-stripping as layout export, so a screen share never shows API keys.
   const layoutJson = $derived(
-    JSON.stringify($state.snapshot(workspace.instances), null, 2),
+    JSON.stringify(
+      $state.snapshot(workspace.instances).map((it) => ({
+        ...it,
+        settings: stripSecrets(it.moduleId, it.settings, (id) => getModule(id)),
+      })),
+      null,
+      2,
+    ),
   );
 </script>
 
