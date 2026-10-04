@@ -45,7 +45,7 @@ async function pingZotero(signal?: AbortSignal): Promise<boolean> {
     return true;
   } catch (err) {
     // A cancelled search is not "Zotero isn't running".
-    if (isAbortError(err)) throw err;
+    if (signal?.aborted || isAbortError(err)) throw err;
     return false;
   }
 }

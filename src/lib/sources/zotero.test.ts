@@ -80,6 +80,13 @@ describe("zotero.search", () => {
     stub(new DOMException("aborted", "AbortError"));
     await expect(zotero.search({ query: "x" })).rejects.toMatchObject({ name: "AbortError" });
   });
+
+  it("treats any failure after the signal was aborted as a cancellation", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    stub(new Error("request cancelled")); // a transport that rejects with a plain Error on abort
+    await expect(zotero.search({ query: "x" }, { signal: controller.signal })).rejects.toThrow("request cancelled");
+  });
 });
 
 describe("source registry", () => {
