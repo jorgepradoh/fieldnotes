@@ -16,10 +16,12 @@
   import Markdown from "$lib/components/Markdown.svelte";
   import { emit, latest, on } from "$lib/core/bus.svelte";
   import { copyText, saveTextFile } from "$lib/core/files";
+  import { library } from "$lib/core/library.svelte";
   import { isAbortError } from "$lib/core/net";
   import { toast } from "$lib/core/toast.svelte";
   import type { ModuleInstance } from "$lib/core/types";
   import { workspace } from "$lib/core/workspace.svelte";
+  import { sortRows } from "$lib/library/query";
   import type { Paper } from "$lib/sources/types";
 
   let { instance }: { instance: ModuleInstance } = $props();
@@ -41,6 +43,7 @@
   let depth = $state<Depth>(DEPTHS.some((d) => d.id === initial.depth) ? (initial.depth as Depth) : "standard");
   let topN = $state(Math.min(30, Math.max(1, Number(initial.topN) || 10)));
   let focus = $state(String(initial.focus ?? ""));
+  let source = $state<"search" | "library">(initial.source === "library" ? "library" : "search");
   let excluded = $state<string[]>(Array.isArray(initial.excluded) ? (initial.excluded as string[]) : []);
   let brief = $state.raw<SavedBrief | null>((initial.brief as SavedBrief | undefined) ?? null);
 
@@ -62,11 +65,19 @@
   let results = $state.raw<{ query: string; papers: Paper[] } | null>(latest("search:results") ?? null);
   $effect(() => on("search:results", (r) => (results = r)));
 
+  void library.ensureLoaded();
+  /** What the briefing is built from: the latest search, or everything saved (newest first). */
+  const corpus = $derived<{ query: string; papers: Paper[] } | null>(
+    source === "library"
+      ? { query: "my library", papers: sortRows(library.entries, "added").map((e) => e.paper) }
+      : results,
+  );
+
   const excludedSet = $derived(new Set(excluded));
   const candidates = $derived.by(() => {
     const out: { paper: Paper; on: boolean }[] = [];
     let taken = 0;
-    for (const paper of results?.papers ?? []) {
+    for (const paper of corpus?.papers ?? []) {
       const on = !excludedSet.has(paper.id);
       if (on) {
         if (taken >= topN) break;
@@ -84,7 +95,7 @@
   const profile = $derived(aiSettings.resolve(profileId));
   const problem = $derived(aiSettings.loaded ? profileProblem(profile) : null);
 
-  const prompt = $derived(buildBrief({ topic: results?.query ?? "", focus, depth, papers: included }));
+  const prompt = $derived(buildBrief({ topic: corpus?.query ?? "", focus, depth, papers: included }));
   const promptTokens = $derived(estimateTokens(prompt.system, prompt.user));
   const isLocal = $derived(
     !!profile && profile.kind === "openai-compatible" && /\/\/(localhost|127\.0\.0\.1)/.test(profile.baseUrl),
@@ -124,7 +135,7 @@
     stick = true;
 
     const papers = included;
-    const topic = results?.query ?? "";
+    const topic = corpus?.query ?? "";
     runPapers = papers;
     const request = prompt;
     try {
@@ -467,17 +478,35 @@
           <p>Set up a model to write briefings.</p>
           <button class="primary" onclick={openSettings}>Set up a model</button>
         </div>
-      {:else if !results || results.papers.length === 0}
+      {:else if !corpus || corpus.papers.length === 0}
+        <div class="row source-row">
+          <label class="inline">
+            From
+            <select bind:value={source} onchange={() => persist({ source })}>
+              <option value="search">Search results</option>
+              <option value="library">My library</option>
+            </select>
+          </label>
+        </div>
         <p class="empty">
-          Run a search in <strong>Paper Search</strong> and the top results appear here, ready to be turned into a
-          cited briefing.
+          {#if source === "library"}
+            Your library is empty. Drop PDFs, markdown notes or a <code>.bib</code> file onto the window, or save papers
+            from the Reader.
+          {:else}
+            Run a search in <strong>Paper Search</strong> and the top results appear here, ready to be turned into a
+            cited briefing.
+          {/if}
         </p>
       {:else}
         <div class="corpus">
           <div class="row">
-            <span class="grow">
-              From search <q>{results.query}</q>
-            </span>
+            <label class="inline grow">
+              From
+              <select bind:value={source} onchange={() => persist({ source })}>
+                <option value="search">Search “{results?.query ?? "…"}”</option>
+                <option value="library">My library</option>
+              </select>
+            </label>
             <label class="inline">
               Papers
               <input
@@ -737,10 +766,6 @@
     gap: 0.4rem;
     flex-shrink: 0;
     font-size: 0.78rem;
-  }
-
-  .corpus q {
-    font-style: italic;
   }
 
   .focus {

@@ -1,5 +1,6 @@
 import { registerModule } from "$lib/core/registry";
 import { debugModule } from "./debug";
+import { libraryModule } from "./library";
 import { notesModule } from "./notes";
 import { pomodoroModule } from "./pomodoro";
 import { readerModule } from "./reader";
@@ -12,6 +13,7 @@ export function registerBuiltinModules(): void {
     searchModule,
     readerModule,
     synthesisModule,
+    libraryModule,
     notesModule,
     pomodoroModule,
     debugModule,

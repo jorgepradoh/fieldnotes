@@ -36,8 +36,10 @@ export interface Paper {
    * first. Absent on papers straight from an adapter.
    */
   sources?: string[];
-  /** Present for library items that carry a file on disk. */
+  /** Present for library items that carry a file stored by the app. */
   localFile?: LocalFileRef;
+  /** The BibTeX key, for entries imported from a .bib file. */
+  citekey?: string;
 }
 
 export type SortMode = "relevance" | "citations" | "newest";

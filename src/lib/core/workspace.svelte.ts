@@ -105,6 +105,13 @@ export class WorkspaceState {
     this.persist();
   }
 
+  /** Make sure the live board has this module, adding it if not. True if it had to be added. */
+  ensure(moduleId: string): boolean {
+    if (this.instances.some((it) => it.moduleId === moduleId)) return false;
+    this.add(moduleId);
+    return this.instances.some((it) => it.moduleId === moduleId);
+  }
+
   remove(instanceId: string): void {
     this.instances = packUp(this.instances.filter((it) => it.instanceId !== instanceId));
     this.persist();

@@ -1,6 +1,9 @@
 <script lang="ts">
-  import { on } from "$lib/core/bus.svelte";
-  import { fetchBytes } from "$lib/core/net";
+  import Markdown from "$lib/components/Markdown.svelte";
+  import { latest, on } from "$lib/core/bus.svelte";
+  import { library } from "$lib/core/library.svelte";
+  import { fetchBytes, isAbortError } from "$lib/core/net";
+  import { toast } from "$lib/core/toast.svelte";
   import type { ModuleInstance } from "$lib/core/types";
   import type { Paper } from "$lib/sources/types";
   import PdfView from "./PdfView.svelte";
@@ -8,65 +11,126 @@
   // Module contract: every module receives its instance, unused here.
   let {}: { instance: ModuleInstance } = $props();
 
-  let paper = $state<Paper | null>(null);
-  let view = $state<"overview" | "pdf">("overview");
-  let pdfData = $state<Uint8Array | null>(null);
-  let pdfStatus = $state<"none" | "loading" | "ready" | "error">("none");
-  let pdfError = $state("");
+  type Content = "none" | "loading" | "ready" | "error";
+
+  let paper = $state.raw<Paper | null>(null);
+  let view = $state<"overview" | "pdf" | "doc">("overview");
+  let pdfData = $state.raw<Uint8Array | null>(null);
+  let docText = $state("");
+  let status = $state<Content>("none");
+  let problem = $state("");
 
   let controller: AbortController | null = null;
+  // Selections can arrive faster than files load; only the newest one may write state.
+  let seq = 0;
 
-  $effect(() =>
-    on("paper:selected", ({ paper: selected }) => {
-      paper = selected;
-      view = "overview";
-      pdfData = null;
-      pdfError = "";
-      if (selected.pdfUrl) {
-        void loadPdf(selected.pdfUrl);
-      } else {
-        pdfStatus = "none";
-      }
-    }),
+  void library.ensureLoaded();
+
+  // The library's copy of this paper, if saved — it may carry a local file.
+  const saved = $derived(paper ? library.find(paper) : undefined);
+  const kind = $derived<"pdf" | "markdown" | null>(
+    (saved?.localFile ?? paper?.localFile)?.kind ?? (paper?.pdfUrl ? "pdf" : null),
   );
 
-  async function loadPdf(url: string): Promise<void> {
+  function open(selected: Paper): void {
     controller?.abort();
+    paper = selected;
+    pdfData = null;
+    docText = "";
+    problem = "";
+    view = "overview";
+    const mine = ++seq;
+
+    const local = library.find(selected)?.localFile ?? selected.localFile;
+    if (local) {
+      status = "loading";
+      void loadLocal(local, mine);
+    } else if (selected.pdfUrl) {
+      status = "loading";
+      void loadRemote(selected.pdfUrl, mine);
+    } else {
+      status = "none";
+    }
+  }
+
+  // Catch up with whatever was selected before this Reader existed, then follow along.
+  const earlier = latest("paper:selected");
+  if (earlier) open(earlier.paper);
+  $effect(() => on("paper:selected", ({ paper: selected }) => open(selected)));
+
+  async function loadLocal(ref: NonNullable<Paper["localFile"]>, mine: number): Promise<void> {
+    try {
+      if (ref.kind === "markdown") {
+        const text = await library.fileText(ref);
+        if (mine !== seq) return;
+        if (text === null) throw new Error("The stored file is missing. Remove the entry and add the file again.");
+        docText = text;
+        status = "ready";
+        view = "doc";
+      } else {
+        const bytes = await library.fileBytes(ref);
+        if (mine !== seq) return;
+        if (bytes === null) throw new Error("The stored file is missing. Remove the entry and add the file again.");
+        pdfData = bytes;
+        status = "ready";
+        view = "pdf";
+      }
+    } catch (err) {
+      if (mine !== seq) return;
+      status = "error";
+      problem = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async function loadRemote(url: string, mine: number): Promise<void> {
     controller = new AbortController();
-    pdfStatus = "loading";
     try {
       const bytes = await fetchBytes(url, controller.signal);
+      if (mine !== seq) return;
       pdfData = bytes;
-      pdfStatus = "ready";
+      status = "ready";
     } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") return;
-      pdfStatus = "error";
-      pdfError = err instanceof Error ? err.message : String(err);
+      if (isAbortError(err) || mine !== seq) return;
+      status = "error";
+      problem = err instanceof Error ? err.message : String(err);
     }
   }
 
   function authorLine(p: Paper): string {
     return p.authors.join(", ");
   }
+
+  function save(): void {
+    if (!paper) return;
+    const { added } = library.add(paper);
+    toast(added.length > 0 ? `Saved “${paper.title}” to your library.` : "Already in your library.", "success");
+  }
 </script>
 
 <div class="reader">
   {#if !paper}
     <p class="empty">
-      Select a paper in <strong>Paper Search</strong> and it opens here.
+      Select a paper in <strong>Paper Search</strong> or the <strong>Library</strong> and it opens here. You can also
+      drop a PDF or markdown file onto the window.
     </p>
   {:else}
     <div class="tabs">
-      <button class:on={view === "overview"} onclick={() => (view = "overview")}>
-        Overview
-      </button>
-      <button
-        class:on={view === "pdf"}
-        onclick={() => (view = "pdf")}
-        disabled={pdfStatus === "none" || pdfStatus === "error"}
-      >
-        {#if pdfStatus === "loading"}PDF ⏳{:else if pdfStatus === "none"}No PDF{:else}PDF{/if}
-      </button>
+      <button class:on={view === "overview"} onclick={() => (view = "overview")}>Overview</button>
+      {#if kind === "markdown"}
+        <button class:on={view === "doc"} onclick={() => (view = "doc")} disabled={status !== "ready"}>
+          {status === "loading" ? "Document ⏳" : "Document"}
+        </button>
+      {:else}
+        <button class:on={view === "pdf"} onclick={() => (view = "pdf")} disabled={status === "none" || status === "error"}>
+          {#if status === "loading"}PDF ⏳{:else if status === "none"}No PDF{:else}PDF{/if}
+        </button>
+      {/if}
+      <span class="grow"></span>
+      {#if saved}
+        <span class="in-library" title="This paper is in your library">✓ In library</span>
+      {:else}
+        <button class="save" onclick={save}>＋ Save to library</button>
+      {/if}
     </div>
 
     {#if view === "overview"}
@@ -86,16 +150,23 @@
         {:else}
           <p class="abstract dim">No abstract available for this paper.</p>
         {/if}
-        {#if pdfStatus === "loading"}
-          <p class="pdf-note">Downloading open-access PDF…</p>
-        {:else if pdfStatus === "ready"}
-          <p class="pdf-note ok">PDF ready — switch to the PDF tab.</p>
-        {:else if pdfStatus === "error"}
-          <p class="pdf-note err">PDF download failed: {pdfError}</p>
+        {#if status === "loading"}
+          <p class="pdf-note">{kind === "markdown" || paper.localFile || saved?.localFile ? "Opening the stored file…" : "Downloading open-access PDF…"}</p>
+        {:else if status === "ready"}
+          <p class="pdf-note ok">{kind === "markdown" ? "Document ready — switch to the Document tab." : "PDF ready — switch to the PDF tab."}</p>
+        {:else if status === "error"}
+          <p class="pdf-note err">Could not open the file: {problem}</p>
         {:else}
-          <p class="pdf-note">No open-access PDF for this paper.</p>
+          <p class="pdf-note">
+            No open-access PDF for this paper.{#if !saved?.localFile} Save it to your library and attach your own copy
+              with “＋PDF”.{/if}
+          </p>
         {/if}
       </article>
+    {:else if view === "doc"}
+      <div class="doc">
+        <Markdown source={docText} />
+      </div>
     {:else if pdfData}
       {#key paper.id}
         <PdfView data={pdfData} />
@@ -109,6 +180,7 @@
     display: flex;
     flex-direction: column;
     height: 100%;
+    min-height: 0;
   }
 
   .empty {
@@ -117,14 +189,20 @@
     color: var(--text-dim);
     font-size: 0.8rem;
     max-width: 85%;
+    line-height: 1.5;
   }
 
   .tabs {
     display: flex;
+    align-items: center;
     gap: 0.3rem;
     padding: 0.4rem 0.5rem;
     flex-shrink: 0;
     border-bottom: 1px solid var(--border);
+  }
+
+  .grow {
+    flex: 1;
   }
 
   .tabs button {
@@ -147,9 +225,26 @@
     cursor: default;
   }
 
-  article {
+  .tabs button.save {
+    border: 1px solid var(--border);
+    color: var(--text);
+  }
+
+  .tabs button.save:hover {
+    border-color: var(--accent);
+  }
+
+  .in-library {
+    font-size: 0.72rem;
+    color: #9ece6a;
+    padding-right: 0.3rem;
+  }
+
+  article,
+  .doc {
     overflow: auto;
     padding: 0.7rem 0.9rem;
+    min-height: 0;
   }
 
   h3 {

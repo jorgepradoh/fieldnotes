@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import Dashboard from "$lib/components/Dashboard.svelte";
+  import DropOverlay from "$lib/components/DropOverlay.svelte";
   import LayoutMenu from "$lib/components/LayoutMenu.svelte";
   import ModulePicker from "$lib/components/ModulePicker.svelte";
   import Toasts from "$lib/components/Toasts.svelte";
@@ -30,6 +31,7 @@
   </main>
 </div>
 
+<DropOverlay />
 <Toasts />
 
 <style>
