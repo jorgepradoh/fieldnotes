@@ -51,6 +51,16 @@ export class WorkspaceState {
   instances = $state<ModuleInstance[]>([]);
   loaded = $state(false);
 
+  private markLoaded!: () => void;
+  private loadedPromise = new Promise<void>((resolve) => {
+    this.markLoaded = resolve;
+  });
+
+  /** Resolves once the stored layouts have been read. Anything that mutates the board should wait for it. */
+  whenLoaded(): Promise<void> {
+    return this.loadedPromise;
+  }
+
   name = $derived(this.layouts.find((l) => l.id === this.activeId)?.name ?? "");
   rows = $derived(contentHeight(this.instances));
 
@@ -80,6 +90,7 @@ export class WorkspaceState {
     this.activeId = file.activeId;
     this.instances = usable(this.requireActive().instances);
     this.loaded = true;
+    this.markLoaded();
     if (fresh) this.persist();
   }
 
@@ -241,6 +252,8 @@ export class WorkspaceState {
   }
 
   private persist(): void {
+    // Saving before the stored layouts were read would overwrite them with an empty board.
+    if (!this.loaded) return;
     this.syncActive();
     const file: LayoutsFile = { version: 2, activeId: this.activeId, layouts: this.layouts };
     saveJson(FILE, KEY, file).catch((err: unknown) => {

@@ -1,9 +1,11 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import Markdown from "$lib/components/Markdown.svelte";
   import { latest, on } from "$lib/core/bus.svelte";
   import { library } from "$lib/core/library.svelte";
   import { fetchBytes, isAbortError } from "$lib/core/net";
   import { toast } from "$lib/core/toast.svelte";
+  import { stripFrontMatter } from "$lib/library/files";
   import type { ModuleInstance } from "$lib/core/types";
   import type { Paper } from "$lib/sources/types";
   import PdfView from "./PdfView.svelte";
@@ -25,6 +27,10 @@
   let seq = 0;
 
   void library.ensureLoaded();
+  onDestroy(() => {
+    seq++; // invalidate any local load still in flight
+    controller?.abort();
+  });
 
   // The library's copy of this paper, if saved — it may carry a local file.
   const saved = $derived(paper ? library.find(paper) : undefined);
@@ -100,8 +106,9 @@
     return p.authors.join(", ");
   }
 
-  function save(): void {
+  async function save(): Promise<void> {
     if (!paper) return;
+    await library.ensureLoaded();
     const { added } = library.add(paper);
     toast(added.length > 0 ? `Saved “${paper.title}” to your library.` : "Already in your library.", "success");
   }
@@ -129,7 +136,7 @@
       {#if saved}
         <span class="in-library" title="This paper is in your library">✓ In library</span>
       {:else}
-        <button class="save" onclick={save}>＋ Save to library</button>
+        <button class="save" onclick={() => void save()}>＋ Save to library</button>
       {/if}
     </div>
 
@@ -165,7 +172,7 @@
       </article>
     {:else if view === "doc"}
       <div class="doc">
-        <Markdown source={docText} />
+        <Markdown source={stripFrontMatter(docText)} />
       </div>
     {:else if pdfData}
       {#key paper.id}

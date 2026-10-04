@@ -40,7 +40,7 @@ export function arxivIdFromDoi(doi: string | null | undefined): string | null {
 export function normalizeTitle(title: string): string {
   return title
     .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036F]/g, "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "");
 }

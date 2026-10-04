@@ -20,7 +20,7 @@ import {
 } from "../library/files";
 import type { Paper } from "../sources/types";
 import { emit } from "./bus.svelte";
-import { LayoutImportError, describeDropped, parseLayoutImport } from "./layouts";
+import { LayoutImportError, MAX_IMPORT_BYTES, describeDropped, parseLayoutImport } from "./layouts";
 import { library } from "./library.svelte";
 import { readPdfInfo } from "./pdf";
 import { getModule } from "./registry";
@@ -42,6 +42,8 @@ export interface ImportSummary {
 const megabytes = (bytes: number): string => `${Math.round(bytes / 1024 / 1024)} MB`;
 
 async function importLayoutFile(file: File): Promise<void> {
+  // Any .json is treated as a layout, so bound it before it is read into memory.
+  if (file.size > MAX_IMPORT_BYTES) throw new LayoutImportError("That file is too large to be a layout.");
   try {
     const parsed = parseLayoutImport(await file.text(), (id) => getModule(id));
     workspace.addImported(parsed);
@@ -146,7 +148,8 @@ export function describeSummary(s: ImportSummary): string {
 
 export async function importFiles(files: File[]): Promise<ImportSummary> {
   const summary: ImportSummary = { pdfs: 0, markdown: 0, bibEntries: 0, duplicates: 0, layouts: 0, failed: 0 };
-  await library.ensureLoaded();
+  // A drop can land during start-up; the board and library must have been read before they are changed.
+  await Promise.all([workspace.whenLoaded(), library.ensureLoaded()]);
   const documents: Paper[] = [];
 
   for (const file of files) {

@@ -79,6 +79,8 @@ export class LibraryState {
 
   /** Add papers, merging duplicates into what is already there. One write for the whole batch. */
   addMany(papers: Paper[], now = Date.now()): AddResult {
+    // Writing before the stored library has been read would overwrite it with a partial list.
+    if (!this.loaded) throw new Error("The library is still loading.");
     const entries = [...this.entries];
     const byId = new Map<string, number>();
     const byKey = new Map<string, number>();
@@ -163,8 +165,18 @@ export class LibraryState {
       arxivId: null,
       localFile: { id, name: input.name, kind: input.kind, size: input.data.byteLength },
     };
+    // A new file may match an existing record (same title…). Joining a record that has no file yet
+    // is the point (a PDF for a BibTeX entry). Joining one that already has a *different* file
+    // would silently drop this one, so in that case keep both as separate entries.
+    const match = this.find(paper);
+    if (match?.localFile && match.localFile.id !== id) {
+      this.entries = [...this.entries, { paper, addedAt: Date.now() }];
+      this.persist();
+      return { paper, isNew: true };
+    }
     this.addMany([paper]);
-    return { paper, isNew: true };
+    // Hand back the library's own copy: after a merge it is the matched record, not `paper`.
+    return { paper: this.find(paper) ?? paper, isNew: true };
   }
 
   /** Attach (or replace) the file behind an existing entry, e.g. a PDF for a BibTeX record. */

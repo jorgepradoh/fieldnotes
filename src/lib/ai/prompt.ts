@@ -50,6 +50,16 @@ export function authorLine(paper: Paper, max = 3): string {
   return paper.authors.length > max ? `${names} et al.` : names;
 }
 
+/**
+ * Paper text is third-party data placed between <papers> and </papers>. If it
+ * could contain those tags it could close the block and have what follows read
+ * as instructions, so any such tag (any case, any inner spacing) is rewritten
+ * to a harmless look-alike before it goes into the prompt.
+ */
+export function defang(text: string): string {
+  return text.replace(/<\s*(\/?)\s*papers\b[^>]*>?/gi, "\u2039$1papers\u203A");
+}
+
 function clip(text: string, max: number): string {
   const flat = text.replace(/\s+/g, " ").trim();
   if (flat.length <= max) return flat;
@@ -68,10 +78,11 @@ function describe(paper: Paper, n: number, abstractChars: number): string {
   ]
     .filter(Boolean)
     .join(" · ");
-  const lines = [`[${n}] ${paper.title.replace(/\s+/g, " ").trim()}`];
-  if (meta) lines.push(meta);
-  if (paper.tldr) lines.push(`TL;DR: ${clip(paper.tldr, 400)}`);
-  lines.push(paper.abstract ? `Abstract: ${clip(paper.abstract, abstractChars)}` : "Abstract: (not available)");
+  // Every field below comes from a third party: defang before it goes between <papers> tags.
+  const lines = [`[${n}] ${defang(paper.title.replace(/\s+/g, " ").trim())}`];
+  if (meta) lines.push(defang(meta));
+  if (paper.tldr) lines.push(`TL;DR: ${defang(clip(paper.tldr, 400))}`);
+  lines.push(paper.abstract ? `Abstract: ${defang(clip(paper.abstract, abstractChars))}` : "Abstract: (not available)");
   return lines.join("\n");
 }
 
@@ -114,9 +125,30 @@ export function estimateTokens(...texts: string[]): number {
   return Math.ceil(texts.reduce((n, t) => n + t.length, 0) / 4);
 }
 
-/** The papers that go into the prompt: drop excluded ones, then take the first `limit`. */
-export function selectCorpus(papers: Paper[], limit: number, excluded: ReadonlySet<string>): Paper[] {
-  return papers.filter((p) => !excluded.has(p.id)).slice(0, Math.max(0, limit));
+export interface CorpusRow {
+  paper: Paper;
+  /** Whether this paper goes into the prompt. */
+  on: boolean;
+}
+
+/**
+ * The rows the paper picker shows: walk the list in order, and stop once
+ * `limit` papers are switched on. Excluded papers met on the way are listed
+ * (switched off) so they can be re-included; they don't count toward the limit.
+ */
+export function corpusRows(papers: Paper[], limit: number, excluded: ReadonlySet<string>): CorpusRow[] {
+  const rows: CorpusRow[] = [];
+  let taken = 0;
+  const max = Math.max(0, limit);
+  for (const paper of papers) {
+    const on = !excluded.has(paper.id);
+    if (on) {
+      if (taken >= max) break;
+      taken++;
+    }
+    rows.push({ paper, on });
+  }
+  return rows;
 }
 
 /**

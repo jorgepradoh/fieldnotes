@@ -191,8 +191,8 @@ export function parseBibtex(text: string): BibParseResult {
 // ------------------------------------------------------------- TeX → text
 
 const LETTER_ACCENTS: Record<string, string> = {
-  "'": "́", "`": "̀", "^": "̂", '"': "̈", "~": "̃", "=": "̄", ".": "̇",
-  u: "̆", v: "̌", H: "̋", c: "̧", k: "̨", r: "̊", d: "̣", b: "̱",
+  "'": "\u0301", "`": "\u0300", "^": "\u0302", '"': "\u0308", "~": "\u0303", "=": "\u0304", ".": "\u0307",
+  u: "\u0306", v: "\u030C", H: "\u030B", c: "\u0327", k: "\u0328", r: "\u030A", d: "\u0323", b: "\u0331",
 };
 
 const SPECIAL_LETTERS: Record<string, string> = {
@@ -265,6 +265,18 @@ export function parseAuthors(raw: string | undefined): string[] {
     .filter(Boolean);
 }
 
+/**
+ * url, doi and eprint are verbatim fields: "~" and "--" are real characters in
+ * them, not TeX for a space and an en dash, so they must not go through
+ * cleanTex. Only BibTeX's own escapes and protective braces are removed.
+ */
+function verbatim(raw: string | undefined): string {
+  return (raw ?? "")
+    .replace(/\\([&%_#$~^{}])/g, "$1")
+    .replace(/[{}]/g, "")
+    .replace(/\s+/g, "");
+}
+
 function pick(fields: Record<string, string>, ...names: string[]): string | null {
   for (const name of names) {
     const v = cleanTex(fields[name] ?? "");
@@ -274,7 +286,7 @@ function pick(fields: Record<string, string>, ...names: string[]): string | null
 }
 
 function arxivIdOf(fields: Record<string, string>): string | null {
-  const eprint = cleanTex(fields.eprint ?? "");
+  const eprint = verbatim(fields.eprint);
   const prefix = cleanTex(fields.archiveprefix ?? fields.eprinttype ?? "").toLowerCase();
   const candidates = [
     prefix === "arxiv" || !prefix ? eprint : "",
@@ -293,12 +305,12 @@ function arxivIdOf(fields: Record<string, string>): string | null {
 
 export function entryToPaper(entry: BibEntry, id: string): Paper {
   const f = entry.fields;
-  const doi = normalizeDoi(cleanTex(f.doi ?? "")) ?? normalizeDoi(cleanTex(f.url ?? ""));
+  const doi = normalizeDoi(verbatim(f.doi)) ?? normalizeDoi(verbatim(f.url));
   const arxivId = arxivIdOf(f);
   const yearText = pick(f, "year") ?? pick(f, "date") ?? "";
   const year = Number.parseInt(yearText.match(/\d{4}/)?.[0] ?? "", 10);
-  const rawUrl = pick(f, "url");
-  const url = /^https?:\/\//i.test(rawUrl ?? "")
+  const rawUrl = verbatim(f.url);
+  const url = /^https?:\/\//i.test(rawUrl)
     ? rawUrl
     : doi
       ? `https://doi.org/${doi}`

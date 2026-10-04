@@ -15,7 +15,7 @@ function haystack(p: Paper): string {
     .filter((v) => v != null)
     .join(" ")
     .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036F]/g, "")
     .toLowerCase();
 }
 
@@ -23,7 +23,7 @@ function haystack(p: Paper): string {
 export function matchesQuery(paper: Paper, query: string): boolean {
   const terms = query
     .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036F]/g, "")
     .toLowerCase()
     .split(/\s+/)
     .filter(Boolean);

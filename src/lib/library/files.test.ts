@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyFile, fileId, looksLikePdf, parseMarkdownMeta, plausiblePdfTitle, titleFromFileName } from "./files";
+import { classifyFile, fallbackHash, fileId, looksLikePdf, parseMarkdownMeta, plausiblePdfTitle, stripFrontMatter, titleFromFileName } from "./files";
 import { matchesQuery, sortRows, type Row } from "./query";
 import type { Paper } from "../sources/types";
 
@@ -94,6 +94,12 @@ describe("parseMarkdownMeta", () => {
     });
   });
 
+  it("handles quoted names in a YAML flow list without leaving stray quotes", () => {
+    expect(parseMarkdownMeta('---\nauthors: ["Alice Smith", "Bob Jones"]\n---\nbody', "x.md").authors).toEqual(["Alice Smith", "Bob Jones"]);
+    expect(parseMarkdownMeta("---\nauthors: ['Alice Smith', 'Bob Jones']\n---\nbody", "x.md").authors).toEqual(["Alice Smith", "Bob Jones"]);
+    expect(parseMarkdownMeta('---\nauthor: "Alice Smith"\n---\nbody', "x.md").authors).toEqual(["Alice Smith"]);
+  });
+
   it("accepts inline author lists and 'and'", () => {
     expect(parseMarkdownMeta("---\nauthor: [A One, B Two]\n---\nbody", "x.md").authors).toEqual(["A One", "B Two"]);
     expect(parseMarkdownMeta("---\nauthor: A One and B Two\n---\nbody", "x.md").authors).toEqual(["A One", "B Two"]);
@@ -134,11 +140,28 @@ describe("parseMarkdownMeta", () => {
   });
 
   it("tolerates a BOM and Windows line endings in front matter", () => {
-    expect(parseMarkdownMeta("﻿---\r\ntitle: Windows\r\n---\r\nbody text that is long enough to be an abstract", "x.md").title).toBe("Windows");
+    expect(parseMarkdownMeta("\uFEFF---\r\ntitle: Windows\r\n---\r\nbody text that is long enough to be an abstract", "x.md").title).toBe("Windows");
   });
 
   it("ignores an unterminated front-matter block", () => {
     expect(parseMarkdownMeta("---\ntitle: Nope\nno closing fence", "x.md").title).not.toBe("Nope");
+  });
+});
+
+describe("stripFrontMatter", () => {
+  it("removes a leading YAML block, including with a BOM or CRLF", () => {
+    expect(stripFrontMatter("---\ntitle: T\nauthors: [A]\n---\n\n# Body\n")).toBe("# Body\n");
+    expect(stripFrontMatter("\uFEFF---\r\ntitle: T\r\n---\r\nBody")).toBe("Body");
+  });
+
+  it("leaves documents without front matter alone", () => {
+    expect(stripFrontMatter("# Title\n\ntext")).toBe("# Title\n\ntext");
+    expect(stripFrontMatter("")).toBe("");
+  });
+
+  it("does not eat a thematic break in the middle, or an unterminated block", () => {
+    expect(stripFrontMatter("intro\n\n---\n\nmore")).toBe("intro\n\n---\n\nmore");
+    expect(stripFrontMatter("---\ntitle: never closed\nbody")).toBe("---\ntitle: never closed\nbody");
   });
 });
 
@@ -150,6 +173,34 @@ describe("fileId", () => {
     expect(await fileId(a)).toBe(await fileId(b));
     expect(await fileId(a)).not.toBe(await fileId(c));
     expect(await fileId(a)).toMatch(/^[0-9a-f]{32}$/);
+  });
+});
+
+describe("fileId without SubtleCrypto", () => {
+  it("fallbackHash is deterministic, 32 hex chars and sensitive to every byte and to length", () => {
+    const a = fallbackHash(new Uint8Array([1, 2, 3]));
+    expect(a).toMatch(/^[0-9a-f]{32}$/);
+    expect(fallbackHash(new Uint8Array([1, 2, 3]))).toBe(a);
+    expect(fallbackHash(new Uint8Array([1, 2, 4]))).not.toBe(a);
+    expect(fallbackHash(new Uint8Array([1, 2, 3, 0]))).not.toBe(a);
+    expect(fallbackHash(new Uint8Array([]))).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it("has no collisions across many similar inputs", () => {
+    const seen = new Set<string>();
+    for (let i = 0; i < 20_000; i++) seen.add(fallbackHash(new Uint8Array([i & 255, (i >> 8) & 255, 7])));
+    expect(seen.size).toBe(20_000);
+  });
+
+  it("fileId uses the fallback when crypto.subtle is unavailable", async () => {
+    const original = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+    Object.defineProperty(globalThis, "crypto", { value: { randomUUID: () => "x" }, configurable: true });
+    try {
+      const data = new Uint8Array([9, 9, 9]).buffer;
+      expect(await fileId(data)).toBe(fallbackHash(new Uint8Array(data)));
+    } finally {
+      if (original) Object.defineProperty(globalThis, "crypto", original);
+    }
   });
 });
 

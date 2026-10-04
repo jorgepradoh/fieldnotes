@@ -16,8 +16,17 @@ import type {
 export const LAYOUT_FORMAT = "fieldnotes-layout";
 export const LAYOUT_VERSION = 1;
 export const MAX_IMPORT_CHARS = 5_000_000;
+/** Byte limit checked on the file itself, before its text is read (UTF-8 can be up to 4 bytes per char). */
+export const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
 export const MAX_INSTANCES = 60;
 export const MAX_NAME_LENGTH = 60;
+/**
+ * Rows a module may start at, and its maximum height. Without bounds a layout
+ * file with `y: 1000000000` would make the packing loop walk a billion rows
+ * (a freeze) and size the board to match.
+ */
+export const MAX_ROW = 500;
+export const MAX_MODULE_ROWS = 200;
 
 /** The slice of a module definition layout code needs; keeps this file registry-free. */
 export type ModuleLookup = (
@@ -154,10 +163,11 @@ export function sanitizeInstances(
     const stored = typeof entry.instanceId === "string" ? entry.instanceId : "";
     const instanceId = keepIds && stored && !usedIds.has(stored) ? stored : makeId();
     usedIds.add(instanceId);
+    const fitted = clampRect(rect, def.minSize?.w ?? 1, def.minSize?.h ?? 1);
     out.push({
       instanceId,
       moduleId: entry.moduleId,
-      position: clampRect(rect, def.minSize?.w ?? 1, def.minSize?.h ?? 1),
+      position: { ...fitted, y: Math.min(fitted.y, MAX_ROW), h: Math.min(fitted.h, MAX_MODULE_ROWS) },
       settings: isRecord(entry.settings) ? (entry.settings as Record<string, unknown>) : {},
     });
   }

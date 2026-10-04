@@ -140,6 +140,51 @@ describe("documents", () => {
   });
 });
 
+describe("documents that match an existing record", () => {
+  const LONG = "A rather long title that is distinctive enough to match on";
+
+  it("keeps two different files with the same title as two entries (and both files)", async () => {
+    const lib = await fresh();
+    const first = await lib.addDocument({ ...doc("a.pdf", buf(1, 1)), meta: { title: LONG, authors: [], year: null, abstract: null, venue: null } });
+    const second = await lib.addDocument({ ...doc("b.pdf", buf(2, 2)), meta: { title: LONG, authors: [], year: null, abstract: null, venue: null } });
+    expect(lib.papers).toHaveLength(2);
+    expect(second.paper.id).not.toBe(first.paper.id);
+    expect(await getBlob(first.paper.localFile!.id)).not.toBeNull();
+    expect(await getBlob(second.paper.localFile!.id)).not.toBeNull();
+    expect(lib.get(second.paper.id)?.localFile?.name).toBe("b.pdf");
+  });
+
+  it("attaches a dropped file to a matching BibTeX record that has none, and returns that record", async () => {
+    const lib = await fresh();
+    lib.add(paper({ id: "bib:1", title: LONG, doi: "10.1000/x" }));
+    const { paper: stored } = await lib.addDocument({ ...doc("full.pdf", buf(3)), meta: { title: LONG, authors: [], year: null, abstract: null, venue: null } });
+    expect(lib.papers).toHaveLength(1);
+    expect(stored.id).toBe("bib:1");
+    expect(stored.doi).toBe("10.1000/x");
+    expect(stored.localFile).toMatchObject({ name: "full.pdf", kind: "pdf" });
+    expect(lib.get("bib:1")?.localFile?.name).toBe("full.pdf");
+  });
+
+  it("does not replace the file of a matching record that already has one", async () => {
+    const lib = await fresh();
+    lib.add(paper({ id: "bib:1", title: LONG }));
+    await lib.attachFile("bib:1", buf(1), "first.pdf", "application/pdf");
+    const second = await lib.addDocument({ ...doc("second.pdf", buf(2)), meta: { title: LONG, authors: [], year: null, abstract: null, venue: null } });
+    expect(lib.papers).toHaveLength(2);
+    expect(lib.get("bib:1")?.localFile?.name).toBe("first.pdf");
+    expect(second.paper.localFile?.name).toBe("second.pdf");
+    expect(await getBlob(second.paper.localFile!.id)).not.toBeNull();
+  });
+});
+
+describe("loading", () => {
+  it("refuses to write before the stored library has been read", () => {
+    const lib = new LibraryState();
+    expect(() => lib.addMany([paper({ id: "x" })])).toThrow(/still loading/);
+    expect(disk.has("library.json:library")).toBe(false);
+  });
+});
+
 describe("attaching and removing", () => {
   it("attaches a PDF to a BibTeX entry", async () => {
     const lib = await fresh();

@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { onDestroy, tick } from "svelte";
   import { aiSettings } from "$lib/ai/settings.svelte";
   import {
     DEPTHS,
     authorLine,
     briefToMarkdown,
     buildBrief,
+    corpusRows,
     estimateTokens,
     visibleText,
     type Depth,
@@ -60,6 +61,8 @@
   let outputEl: HTMLDivElement | undefined = $state();
   let stick = true;
   let controller: AbortController | null = null;
+  // Switching layout or removing the module must stop a running generation: it is billed per token.
+  onDestroy(() => controller?.abort());
 
   // ------------------------------------------------------------- corpus
   let results = $state.raw<{ query: string; papers: Paper[] } | null>(latest("search:results") ?? null);
@@ -74,19 +77,7 @@
   );
 
   const excludedSet = $derived(new Set(excluded));
-  const candidates = $derived.by(() => {
-    const out: { paper: Paper; on: boolean }[] = [];
-    let taken = 0;
-    for (const paper of corpus?.papers ?? []) {
-      const on = !excludedSet.has(paper.id);
-      if (on) {
-        if (taken >= topN) break;
-        taken++;
-      }
-      out.push({ paper, on });
-    }
-    return out;
-  });
+  const candidates = $derived(corpusRows(corpus?.papers ?? [], topN, excludedSet));
   const included = $derived(candidates.filter((c) => c.on).map((c) => c.paper));
   const withoutAbstract = $derived(included.filter((p) => !p.abstract && !p.tldr).length);
 
@@ -377,10 +368,11 @@
           API key {#if draft.kind === "openai-compatible"}<small>(leave empty for local servers)</small>{/if}
           <input type="password" bind:value={draft.apiKey} onchange={commit} placeholder="none" autocomplete="off" />
         </label>
-        <label>
-          Model
-          <span class="row">
+        <div class="field">
+          <label for={`model-${instance.instanceId}`}>Model</label>
+          <div class="row">
             <input
+              id={`model-${instance.instanceId}`}
               class="grow"
               list={`models-${instance.instanceId}`}
               bind:value={draft.model}
@@ -392,15 +384,29 @@
             <button type="button" onclick={() => void loadModels()} disabled={modelsStatus === "loading"}>
               {modelsStatus === "loading" ? "…" : "Load models"}
             </button>
-          </span>
+          </div>
           <datalist id={`models-${instance.instanceId}`}>
             {#each models as m (m)}<option value={m}></option>{/each}
           </datalist>
-        </label>
+        </div>
         {#if modelsStatus === "error" || modelsError}
           <p class="error">{modelsError}</p>
         {:else if models.length > 0}
-          <p class="ok">Connected — {models.length} models available (see the Model field’s suggestions).</p>
+          <p class="ok">Connected — {models.length} model{models.length === 1 ? "" : "s"} available. Pick one:</p>
+          <div class="chips">
+            {#each models.slice(0, 24) as m (m)}
+              <button
+                type="button"
+                class="chip"
+                class:on={draft.model === m}
+                onclick={() => {
+                  if (draft) draft.model = m;
+                  commit();
+                }}>{m}</button
+              >
+            {/each}
+            {#if models.length > 24}<span class="dim">+{models.length - 24} more — type in the Model field</span>{/if}
+          </div>
         {/if}
         <label>
           Max output tokens
@@ -575,8 +581,8 @@
       {#if error}
         <p class="error">{error}</p>
       {/if}
-      {#if notice && status === "idle"}
-        <p class="info">{notice}</p>
+      {#if (notice || brief?.notice) && status === "idle"}
+        <p class="info">{notice || brief?.notice}</p>
       {/if}
 
       {#if shownText}
@@ -795,6 +801,34 @@
   .papers small,
   .refs small {
     color: var(--text-dim);
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .field > label {
+    font-size: 0.74rem;
+    color: var(--text-dim);
+  }
+
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+  }
+
+  .chip {
+    border-radius: 999px;
+    padding: 0.15rem 0.6rem;
+    font-size: 0.72rem;
+  }
+
+  .chip.on {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 14%, var(--surface-2));
   }
 
   .presets {

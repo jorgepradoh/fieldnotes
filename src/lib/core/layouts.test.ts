@@ -326,3 +326,43 @@ describe("presets", () => {
     expect(new Set(PRESETS.map((p) => p.id)).size).toBe(PRESETS.length);
   });
 });
+
+describe("hostile positions", () => {
+  it("a huge y or height cannot freeze import or make the board enormous", () => {
+    const text = JSON.stringify({
+      format: LAYOUT_FORMAT,
+      version: 1,
+      name: "evil",
+      modules: [
+        { moduleId: "notes", position: { x: -5, y: 1_000_000_000, w: 1_000_000, h: 1_000_000_000 }, settings: {} },
+        { moduleId: "notes", position: { x: 3, y: 2_000_000_000, w: 2, h: 3 }, settings: {} },
+      ],
+    });
+    const start = Date.now();
+    const parsed = parseLayoutImport(text, lookup, mint);
+    expect(Date.now() - start).toBeLessThan(500);
+    for (const it of parsed.instances) {
+      expect(it.position.y).toBeLessThanOrEqual(1000);
+      expect(it.position.h).toBeLessThanOrEqual(200);
+      expect(it.position.x).toBeGreaterThanOrEqual(0);
+      expect(it.position.x + it.position.w).toBeLessThanOrEqual(12);
+    }
+    expect(noOverlaps(parsed.instances)).toBe(true);
+  });
+
+  it("drops positions that are not finite numbers", () => {
+    // JSON.parse turns 1e999 into Infinity.
+    const text = '{"format":"fieldnotes-layout","version":1,"name":"x","modules":[{"moduleId":"notes","position":{"x":0,"y":1e999,"w":2,"h":2},"settings":{}}]}';
+    const parsed = parseLayoutImport(text, lookup, mint);
+    expect(parsed.instances).toEqual([]);
+    expect(parsed.dropped.invalid).toBe(1);
+  });
+
+  it("stored layouts are protected the same way", () => {
+    const file = normalizeLayoutsFile(
+      { version: 2, activeId: "a", layouts: [{ id: "a", name: "A", instances: [{ instanceId: "i", moduleId: "notes", position: { x: 0, y: 1e12, w: 2, h: 2 }, settings: {} }] }] },
+      lookup,
+    );
+    expect(file?.layouts[0].instances[0].position.y).toBeLessThanOrEqual(1000);
+  });
+});

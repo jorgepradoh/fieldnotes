@@ -236,6 +236,22 @@ describe("entryToPaper", () => {
     expect(bibtexToPapers(`@article{k, title={t}, url={https://dx.doi.org/10.1000/xyz123}}`).papers[0].doi).toBe("10.1000/xyz123");
   });
 
+  it("keeps ~ and -- in url, doi and eprint: they are verbatim fields, not TeX", () => {
+    const [p] = bibtexToPapers("@misc{k, title={t}, url={http://x.org/~u/p--q}}").papers;
+    expect(p.url).toBe("http://x.org/~u/p--q");
+    expect(bibtexToPapers("@misc{k, title={t}, doi={10.1000/a~b--c}}").papers[0].doi).toBe("10.1000/a~b--c");
+  });
+
+  it("removes BibTeX escapes, braces and line-wrap whitespace from urls", () => {
+    const text = String.raw`@misc{k, title={t}, url={http://x.org/\~user/a\_b\%20c
+      /{page}}}`;
+    expect(bibtexToPapers(text).papers[0].url).toBe("http://x.org/~user/a_b%20c/page");
+  });
+
+  it("still cleans TeX in text fields", () => {
+    expect(bibtexToPapers("@misc{k, title={Vol.~1 -- done}}").papers[0].title).toBe("Vol. 1 – done");
+  });
+
   it("prefers the explicit url field and ignores non-http urls", () => {
     expect(bibtexToPapers(`@article{k, title={t}, doi={10.1000/a}, url={https://example.org/p}}`).papers[0].url).toBe("https://example.org/p");
     expect(bibtexToPapers(`@article{k, title={t}, doi={10.1000/a}, url={javascript:alert(1)}}`).papers[0].url).toBe("https://doi.org/10.1000/a");

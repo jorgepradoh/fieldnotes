@@ -47,9 +47,14 @@ export function networkError(err: unknown, baseUrl: string): LlmError {
     // keep the raw string
   }
   const reason = err instanceof Error ? err.message : String(err);
+  // The desktop app only allows plain http to localhost (see capabilities/default.json).
+  const blockedHttp = /^http:\/\//i.test(baseUrl.trim()) && !/^http:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(baseUrl.trim());
+  const hint = blockedHttp
+    ? " Plain http is only allowed for localhost: use https, or add the host to the app's HTTP scope."
+    : "";
   return new LlmError(
     "network",
-    `Could not reach ${host}. Is the server running and the base URL right? (${reason})`,
+    `Could not reach ${host}. Is the server running and the base URL right?${hint} (${reason})`,
   );
 }
 

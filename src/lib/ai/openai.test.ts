@@ -197,6 +197,18 @@ describe("errors", () => {
     expect((err as Error).message).toContain("localhost:11434");
   });
 
+  it("explains that plain http to a remote host is not allowed, but not for localhost", async () => {
+    const boom = async () => {
+      throw new TypeError("url not allowed on the configured scope");
+    };
+    const remote = await run(openAiCompatible({ ...profile, baseUrl: "http://192.168.1.50:8080/v1" }, boom)).catch((e: unknown) => e);
+    expect((remote as Error).message).toMatch(/Plain http is only allowed for localhost/);
+    const local = await run(openAiCompatible({ ...profile, baseUrl: "http://127.0.0.1:1234/v1" }, boom)).catch((e: unknown) => e);
+    expect((local as Error).message).not.toMatch(/Plain http/);
+    const secure = await run(openAiCompatible({ ...profile, baseUrl: "https://llm.example.com/v1" }, boom)).catch((e: unknown) => e);
+    expect((secure as Error).message).not.toMatch(/Plain http/);
+  });
+
   it("lets aborts through untouched", async () => {
     const p = openAiCompatible(profile, async () => {
       throw new DOMException("Aborted", "AbortError");

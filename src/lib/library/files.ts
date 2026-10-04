@@ -63,8 +63,16 @@ function unquote(value: string): string {
   return (v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")) ? v.slice(1, -1) : v;
 }
 
+const FRONT_MATTER = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/;
+
+/** The document without its leading YAML front matter (which would otherwise render as a heading). */
+export function stripFrontMatter(text: string): string {
+  const m = text.match(FRONT_MATTER);
+  return m ? text.slice(m[0].length) : text;
+}
+
 function frontMatter(text: string): { data: Record<string, string>; body: string } {
-  const m = text.match(/^﻿?---\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)/);
+  const m = text.match(FRONT_MATTER);
   if (!m) return { data: {}, body: text };
   const data: Record<string, string> = {};
   let listKey: string | null = null;
@@ -94,10 +102,13 @@ export function parseMarkdownMeta(text: string, fileName: string): MarkdownMeta 
   const heading = body.match(/^\s{0,3}#\s+(.+?)\s*#*\s*$/m)?.[1];
   const title = stripMarkdown(unquote(data.title ?? "")) || (heading ? stripMarkdown(heading) : "") || titleFromFileName(fileName);
 
-  const rawAuthors = unquote((data.authors ?? data.author ?? "").replace(/^\[|\]$/g, ""));
-  const authors = rawAuthors
+  // Split first, then unquote each name: unquoting the whole list would strip only the outer pair
+  // of quotes of ["A", "B"] and leave one stray quote on each end.
+  const authors = (data.authors ?? data.author ?? "")
+    .trim()
+    .replace(/^\[|\]$/g, "")
     .split(/\s*,\s*|\s+and\s+/i)
-    .map((a) => unquote(a))
+    .map((a) => unquote(a.trim()))
     .filter(Boolean);
 
   const year = Number.parseInt((data.date ?? data.year ?? "").match(/\d{4}/)?.[0] ?? "", 10);
@@ -123,8 +134,35 @@ export function parseMarkdownMeta(text: string, fileName: string): MarkdownMeta 
   return { title, authors, year: Number.isFinite(year) ? year : null, abstract };
 }
 
-/** First 32 hex chars of the SHA-256 of the bytes — a stable id for identical files. */
+/**
+ * 128-bit non-cryptographic hash (cyrb128) — only used when SubtleCrypto is
+ * missing, which happens outside secure contexts. Ids just need to be stable
+ * and collision-resistant for a person's own files.
+ */
+export function fallbackHash(bytes: Uint8Array): string {
+  let h1 = 1779033703;
+  let h2 = 3144134277;
+  let h3 = 1013904242;
+  let h4 = 2773480762;
+  for (let i = 0; i < bytes.length; i++) {
+    const k = bytes[i];
+    h1 = h2 ^ Math.imul(h1 ^ k, 597399067);
+    h2 = h3 ^ Math.imul(h2 ^ k, 2869860233);
+    h3 = h4 ^ Math.imul(h3 ^ k, 951274213);
+    h4 = h1 ^ Math.imul(h4 ^ k, 2716044179);
+  }
+  h1 = Math.imul(h3 ^ (h1 >>> 18), 597399067);
+  h2 = Math.imul(h4 ^ (h2 >>> 22), 2869860233);
+  h3 = Math.imul(h1 ^ (h3 >>> 17), 951274213);
+  h4 = Math.imul(h2 ^ (h4 >>> 19), 2716044179);
+  const hex = (n: number): string => (n >>> 0).toString(16).padStart(8, "0");
+  return hex(h1 ^ h2 ^ h3 ^ h4) + hex(h2 ^ h1) + hex(h3 ^ h1) + hex(h4 ^ h1);
+}
+
+/** 32 hex chars identifying the bytes: stable for identical files, different otherwise. */
 export async function fileId(data: ArrayBuffer): Promise<string> {
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", data);
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) return fallbackHash(new Uint8Array(data));
+  const digest = await subtle.digest("SHA-256", data);
   return Array.from(new Uint8Array(digest).slice(0, 16), (b) => b.toString(16).padStart(2, "0")).join("");
 }

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { onDestroy, untrack } from "svelte";
   import { emit } from "$lib/core/bus.svelte";
   import { isAbortError, openExternal } from "$lib/core/net";
   import type { ModuleInstance } from "$lib/core/types";
@@ -58,6 +58,8 @@
   let batches = $state.raw<Batches | null>(null);
 
   let controller: AbortController | null = null;
+  // Leaving the layout (or removing the module) must not leave requests running.
+  onDestroy(() => controller?.abort());
 
   const order = $derived(SOURCES.map((s) => s.id).filter((id) => enabled.includes(id)));
   const papers = $derived(batches ? visiblePapers(batches, order, filters, sort) : []);
@@ -123,17 +125,17 @@
    */
   async function run(fresh: boolean, only?: string[]): Promise<void> {
     controller?.abort();
-    const mine = new AbortController();
-    controller = mine;
-
     const ids = only ?? order;
     if (ids.length === 0) {
+      // The aborted run above leaves `status` alone, so reset it here or the form stays disabled.
+      status = "idle";
       fatal = "Turn on at least one source.";
       return;
     }
+    const mine = new AbortController();
+    controller = mine;
     fatal = "";
     status = fresh ? "searching" : "paging";
-    if (fresh) activeQuery = query.trim();
 
     try {
       const next = await fetchNextPage(
@@ -156,6 +158,9 @@
     e.preventDefault();
     const q = query.trim();
     if (!q || status === "searching") return;
+    // The query behind the results only changes on submit — editing the box alone must not
+    // redirect a later filter change or "load more" to a different search.
+    activeQuery = q;
     history = [q, ...history.filter((h) => h !== q)].slice(0, HISTORY_LIMIT);
     persist({ query: q, history });
     emit("search:query", { query: q });

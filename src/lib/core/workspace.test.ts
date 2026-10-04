@@ -58,6 +58,34 @@ describe("first run and migration", () => {
   });
 });
 
+describe("before the stored layouts are read", () => {
+  it("never writes: an early mutation must not overwrite what is on disk", async () => {
+    const saved = {
+      version: 2,
+      activeId: "a",
+      layouts: [{ id: "a", name: "Mine", updatedAt: 1, instances: [{ instanceId: "n", moduleId: "notes", position: { x: 0, y: 0, w: 4, h: 4 }, settings: { text: "precious" } }] }],
+    };
+    disk.set("layouts.json:layouts", saved);
+    const ws = new WorkspaceState();
+    ws.add("notes"); // e.g. a file dropped during start-up
+    expect(disk.get("layouts.json:layouts")).toEqual(saved);
+    await ws.load();
+    expect(ws.name).toBe("Mine");
+    expect(ws.instances[0].settings.text).toBe("precious");
+  });
+
+  it("whenLoaded resolves only after load()", async () => {
+    const ws = new WorkspaceState();
+    let resolved = false;
+    void ws.whenLoaded().then(() => (resolved = true));
+    await Promise.resolve();
+    expect(resolved).toBe(false);
+    await ws.load();
+    await ws.whenLoaded();
+    expect(resolved).toBe(true);
+  });
+});
+
 describe("layouts", () => {
   it("creates from a preset, switches, and keeps each board's content separate", async () => {
     const ws = await fresh();

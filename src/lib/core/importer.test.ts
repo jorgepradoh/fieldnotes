@@ -18,6 +18,7 @@ const ensured: string[] = [];
 const imported: unknown[] = [];
 vi.mock("./workspace.svelte", () => ({
   workspace: {
+    whenLoaded: async () => undefined,
     ensure: (id: string) => {
       ensured.push(id);
       return true;
@@ -187,6 +188,16 @@ describe("mixed drops and other files", () => {
     expect(summary.layouts).toBe(1);
     expect(imported).toHaveLength(1);
     expect(toasts.at(-1)?.text).toContain("Imported layout “Shared”");
+  });
+
+  it("rejects an oversized .json before reading it into memory", async () => {
+    const huge = text("dataset.json", "{}");
+    Object.defineProperty(huge, "size", { value: 50 * 1024 * 1024 });
+    huge.text = () => Promise.reject(new Error("must not be read"));
+    const summary = await importFiles([huge]);
+    expect(summary.failed).toBe(1);
+    expect(imported).toEqual([]);
+    expect(toasts.at(-1)?.text).toContain("too large to be a layout");
   });
 
   it("reports an invalid layout file as an error", async () => {

@@ -19,7 +19,7 @@
   <header class="topbar">
     <span class="logo">fieldnotes</span>
     <span class="divider">/</span>
-    <LayoutMenu />
+    {#if workspace.loaded}<LayoutMenu />{/if}
     <div class="spacer"></div>
     <ModulePicker />
   </header>
