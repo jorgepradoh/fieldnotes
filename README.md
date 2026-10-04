@@ -19,11 +19,16 @@ is built as a set of modules you can rearrange — or extend with your own.
 | 📖 **Reader** | Overview (abstract, TL;DR) plus an in-app PDF viewer. Opens open-access PDFs, your own PDFs, and markdown notes. |
 | 🧠 **AI Brief** | Turns the current search results (or your library) into a cited “state of the field” briefing. Claude, OpenAI, OpenRouter, Ollama, LM Studio, or any OpenAI-compatible server. |
 | 📚 **Library** | Papers you saved, PDFs and markdown you dropped in, BibTeX you imported. |
-| 📝 **Notes** | Markdown notes with live preview (raw HTML is shown as text, never run). |
+| 📝 **Notes** | Markdown notes in a CodeMirror editor (optional **Vim mode** under ⚙ Settings) with live preview (raw HTML is shown as text, never run). |
+| ✏️ **Annotations** | Notes per paper: select a paper and write about it; they persist across sessions and travel with an export. |
+| 📋 **Reading Queue** | Move papers through To Read → Reading → Done. |
+| ↗ **Export** | Writes your library as BibTeX, Markdown or JSON, with your annotations. |
 | 🍅 **Pomodoro**, 🐞 **Debug** | A focus timer; a live view of the event bus. |
 
 Everything sits on a drag-and-resize dashboard. Save arrangements as **named
-layouts**, start from presets, and export/import them as files.
+layouts**, start from presets, and export/import them as files. **Focus mode**
+(⌘⇧F / Ctrl+Shift+F, or the ⊡ button) hides the chrome, and in the desktop app
+goes full screen.
 
 ## Core ideas
 
@@ -136,6 +141,7 @@ You can keep several profiles and switch between them per AI Brief module.
 | **Semantic Scholar** | abstracts, TL;DRs, citation counts, open-access PDFs | optional | Shared rate pool without a key (occasional 429s); a free key lifts it. |
 | **OpenAlex** | broad coverage, citation counts, open-access PDFs | optional | An email puts you in the faster “polite pool”; an API key is sent if you set one. |
 | **arXiv** | preprints, always with a PDF; no citation counts | none | Desktop app only. When a citation minimum is set, arXiv drops out of the results. |
+| **Zotero** | items from your own Zotero library | none | Desktop app only; Zotero must be running with its local API enabled. Off by default: switch on the Zotero chip in Paper Search. Read-only. |
 
 Add keys and your email in the Paper Search ⚙ panel. A failing or rate-limited
 source shows a warning with **Retry** while the others' results stay. Results
@@ -160,8 +166,10 @@ your own copy. Limits: PDFs up to 150 MB, text files up to 8 MB.
 
 Where things live: metadata in `library.json` in the app-data folder; file
 contents in the webview's IndexedDB. That means the files are **not** loose
-files you can browse, and clearing the app's web storage removes them —
-exporting the library is on the [ideas list](docs/IDEAS.md).
+files you can browse, and clearing the app's web storage removes them. The
+**Export** module writes the library's metadata and your annotations as BibTeX,
+Markdown or JSON; exporting the stored files themselves is on the
+[ideas list](docs/IDEAS.md).
 
 ## Layouts
 
@@ -188,7 +196,8 @@ layouts switches your whole workspace.
 |---|---|
 | Shell | Tauri 2 (Rust): store, http, dialog, fs and opener plugins |
 | UI | SvelteKit 2 + Svelte 5 + TypeScript |
-| Paper sources | Semantic Scholar, OpenAlex, arXiv behind one `PaperSource` interface; a federated layer merges, ranks, filters and sorts |
+| Paper sources | Semantic Scholar, OpenAlex, arXiv and your local Zotero behind one `PaperSource` interface; a federated layer merges, ranks, filters and sorts |
+| Editor | CodeMirror 6 for notes and annotations, with optional Vim keybindings (`@replit/codemirror-vim`) |
 | AI | `LlmProvider` interface: Anthropic (official SDK) and OpenAI-compatible REST (SSE streaming) |
 | Storage | JSON files via the Tauri store plugin (layouts, library metadata, AI profiles) and IndexedDB (file contents) |
 | Untrusted text | LLM output and dropped markdown go through a sanitising renderer: raw HTML escaped, images and non-web links dropped |
@@ -202,7 +211,8 @@ layouts switches your whole workspace.
 4. ~~AI synthesis module~~ ✓ — cited briefs; Claude, OpenAI-compatible, local models
 5. ~~Local library~~ ✓ — drag-and-drop files, BibTeX import
 6. ~~Named layouts~~ ✓ — presets, export/import
-7. Chat-with-paper, citation graph, library export, community modules *(next)*
+7. ~~Writing and organising~~ ✓ — CodeMirror notes with Vim mode, annotations, reading queue, library export (BibTeX / Markdown / JSON), Zotero search, focus mode
+8. Chat-with-paper, citation graph, exporting the stored files, community modules *(next)*
 
 Further ideas, including **Obsidian integration** (notes, graph, diagrams), are
 parked in [`docs/IDEAS.md`](docs/IDEAS.md).
@@ -262,9 +272,9 @@ npm run tauri build    # packaged installer for your OS
 ### Project layout
 
 ```
-src/lib/core/        registry, event bus, grid maths, workspace + layouts, library, importer, storage, net, markdown
-src/lib/components/  Dashboard, ModuleFrame, ModulePicker, LayoutMenu, DropOverlay, Toasts, Markdown
-src/lib/modules/     one folder per module (search, reader, synthesis, library, notes, pomodoro, debug)
+src/lib/core/        registry, event bus, grid maths, workspace + layouts, library, importer, storage, net, markdown, annotations, queue, exporters, settings, zen
+src/lib/components/  Dashboard, ModuleFrame, ModulePicker, LayoutMenu, SettingsMenu, DropOverlay, Toasts, Markdown, Editor
+src/lib/modules/     one folder per module (search, reader, synthesis, library, annotations, queue, notes, pomodoro, export, debug)
 src/lib/sources/     paper-source adapters, merge/rank logic, federated search
 src/lib/ai/          LlmProvider interface, Anthropic + OpenAI-compatible providers, SSE parser, prompt builder
 src/lib/library/     BibTeX parser, file-type helpers, library search
@@ -274,9 +284,10 @@ docs/                ideas and design notes
 
 ### Tests
 
-`npm test` runs ~470 unit tests: parsers (BibTeX, arXiv Atom, SSE), merge and
+`npm test` runs ~490 unit tests: parsers (BibTeX, arXiv Atom, SSE), merge and
 ranking logic, layout validation and migration, both LLM providers against
-mocked streams, and the markdown sanitiser against common XSS vectors. The
+mocked streams, the library exporters and the Zotero adapter, and the markdown
+sanitiser against common XSS vectors. The
 external APIs are exercised only through fixtures, so a real search or model
 call is the thing to try after changing an adapter.
 
@@ -286,8 +297,8 @@ call is the thing to try after changing an adapter.
   `false` in `src-tauri/tauri.conf.json`.
 - Network requests go through the Tauri HTTP plugin. Allowed hosts are pinned
   in `src-tauri/capabilities/default.json`: all `https://` plus `localhost` /
-  `127.0.0.1` over `http` for local model servers. A model server on another
-  machine needs `https` or an entry added there.
+  `127.0.0.1` over `http` for local model servers and Zotero's local API. A
+  model server on another machine needs `https` or an entry added there.
 - Saving a file uses the native dialog plus a write to *only the path you
   picked*; there is no general filesystem access.
 
@@ -297,8 +308,10 @@ Early but usable. Working today: the module system and named layouts;
 Semantic Scholar + OpenAlex + arXiv search with merge/filters; the Reader
 (open-access, local PDFs, markdown); cited AI briefs from Claude or any
 OpenAI-compatible model; a local library with drag-and-drop and BibTeX import;
-notes, pomodoro and debug modules. Not built yet: chat with a paper, a citation
-graph, exporting the library, direct DOI / arXiv-id lookup, and a
+Zotero search; notes (CodeMirror, optional Vim mode), annotations, a reading
+queue, library export (BibTeX / Markdown / JSON), focus mode, pomodoro and
+debug modules. Not built yet: chat with a paper, a citation graph, exporting
+the stored files, direct DOI / arXiv-id lookup, and a
 stricter content-security policy for the webview. Feedback and ideas welcome
 via issues.
 

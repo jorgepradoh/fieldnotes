@@ -67,8 +67,9 @@ search, the AI Brief and the local library. Roughly in order of value.
 - **API keys in the OS keychain** instead of plain JSON in the app-data folder
   (a small Rust command or the `keyring` crate). Keys already never travel in
   layout exports.
-- **Export the library** — BibTeX plus a zip of the stored files — so data isn't
-  only reachable through the app's webview storage.
+- **Export the stored files** — a zip of the library's PDFs and markdown — so
+  data isn't only reachable through the app's webview storage. (The Export
+  module already writes the metadata as BibTeX / Markdown / JSON.)
 - **Direct lookup** in Paper Search: paste a DOI, arXiv id or URL and go to that
   paper (all three APIs support it).
 - **Send a brief to Notes / the library** as a markdown item.
