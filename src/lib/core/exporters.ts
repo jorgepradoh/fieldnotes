@@ -95,7 +95,7 @@ export function toMarkdown(entries: LibraryEntry[], annotations: AnnotationMap):
 export function toJSON(entries: LibraryEntry[], annotations: AnnotationMap): string {
   const payload = entries.map((e) => ({
     paper: e.paper,
-    savedAt: e.savedAt,
+    savedAt: new Date(e.addedAt).toISOString(),
     annotation: annotations[e.paper.id] ?? "",
   }));
   return JSON.stringify(payload, null, 2);

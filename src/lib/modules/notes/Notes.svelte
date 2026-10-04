@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { marked } from "marked";
+  import Markdown from "$lib/components/Markdown.svelte";
   import { workspace } from "$lib/core/workspace.svelte";
   import Editor from "$lib/components/Editor.svelte";
   import type { ModuleInstance } from "$lib/core/types";
@@ -9,9 +9,6 @@
   // svelte-ignore state_referenced_locally
   let text = $state(String(instance.settings.text ?? ""));
   let preview = $state(false);
-
-  // Rendering the user's own local notes — not remote content.
-  const html = $derived(marked.parse(text, { async: false }));
 
   $effect(() => {
     const current = text;
@@ -29,7 +26,8 @@
     <button class:on={preview} onclick={() => (preview = true)}>Preview</button>
   </div>
   {#if preview}
-    <div class="preview">{@html html}</div>
+    <!-- Notes often hold pasted web text, so they get the same sanitising renderer as everything else. -->
+    <div class="preview"><Markdown source={text} /></div>
   {:else}
     <Editor value={text} onchange={(t) => (text = t)} placeholder="Write markdown…" />
   {/if}
@@ -70,22 +68,5 @@
     padding: 0.2rem 0.8rem 0.8rem;
     font-size: 0.85rem;
     line-height: 1.55;
-  }
-
-  .preview :global(h1),
-  .preview :global(h2),
-  .preview :global(h3) {
-    margin: 0.6em 0 0.3em;
-  }
-
-  .preview :global(a) {
-    color: var(--accent);
-  }
-
-  .preview :global(code) {
-    background: var(--surface-2);
-    padding: 0.1em 0.3em;
-    border-radius: 4px;
-    font-size: 0.9em;
   }
 </style>

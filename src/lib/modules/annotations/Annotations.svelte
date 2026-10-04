@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { marked } from "marked";
   import { on } from "$lib/core/bus.svelte";
   import { annotations } from "$lib/core/annotations.svelte";
   import Editor from "$lib/components/Editor.svelte";
+  import Markdown from "$lib/components/Markdown.svelte";
   import type { Paper } from "$lib/sources/types";
   import type { ModuleInstance } from "$lib/core/types";
 
@@ -19,9 +19,6 @@
       text = annotations.get(selected.id);
     }),
   );
-
-  // Rendering the user's own local notes — not remote content.
-  const html = $derived(marked.parse(text, { async: false }));
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -53,7 +50,8 @@
     {#if preview}
       <div class="preview">
         {#if text}
-          {@html html}
+          <!-- Annotations often hold pasted web text, so they get the same sanitising renderer as Notes. -->
+          <Markdown source={text} />
         {:else}
           <p class="dim">Nothing written yet.</p>
         {/if}

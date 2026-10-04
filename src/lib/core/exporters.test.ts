@@ -3,7 +3,7 @@ import { toBibTeX, toMarkdown, toJSON } from "./exporters";
 import type { LibraryEntry } from "./library.svelte";
 
 const FULL_PAPER: LibraryEntry = {
-  savedAt: "2024-01-15T10:00:00.000Z",
+  addedAt: Date.parse("2024-01-15T10:00:00.000Z"),
   paper: {
     id: "arxiv:1706.03762",
     source: "arxiv",
@@ -22,7 +22,7 @@ const FULL_PAPER: LibraryEntry = {
 };
 
 const LOCAL_PAPER: LibraryEntry = {
-  savedAt: "2024-01-15T11:00:00.000Z",
+  addedAt: Date.parse("2024-01-15T11:00:00.000Z"),
   paper: {
     id: "local:/Users/me/papers/some_paper.pdf",
     source: "local",

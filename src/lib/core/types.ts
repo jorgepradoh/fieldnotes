@@ -1,9 +1,6 @@
 import type { Component } from "svelte";
 
 export interface AppSettings {
-  anthropicKey?: string;
-  ollamaUrl?: string;
-  ollamaModel?: string;
   vimMode?: boolean;
 }
 
@@ -33,9 +30,30 @@ export interface ModuleDefinition {
   defaultSize: { w: number; h: number };
   minSize?: { w: number; h: number };
   multiInstance?: boolean;
+  /**
+   * `settings` keys that must never leave the machine — API keys, emails.
+   * They are stripped when a layout is exported.
+   */
+  secretSettings?: string[];
 }
 
-export interface Workspace {
+/** A named board: which modules are placed where, plus their settings. */
+export interface Layout {
+  id: string;
+  name: string;
+  instances: ModuleInstance[];
+  updatedAt: number;
+}
+
+/** What `layouts.json` holds. */
+export interface LayoutsFile {
+  version: 2;
+  activeId: string;
+  layouts: Layout[];
+}
+
+/** The v0.1 single-workspace record, kept only so it can be migrated. */
+export interface LegacyWorkspace {
   name: string;
   instances: ModuleInstance[];
 }

@@ -1,8 +1,11 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import Dashboard from "$lib/components/Dashboard.svelte";
+  import DropOverlay from "$lib/components/DropOverlay.svelte";
+  import LayoutMenu from "$lib/components/LayoutMenu.svelte";
   import ModulePicker from "$lib/components/ModulePicker.svelte";
   import SettingsMenu from "$lib/components/SettingsMenu.svelte";
+  import Toasts from "$lib/components/Toasts.svelte";
   import { annotations } from "$lib/core/annotations.svelte";
   import { library } from "$lib/core/library.svelte";
   import { queue } from "$lib/core/queue.svelte";
@@ -23,7 +26,7 @@
 
   onMount(() => {
     loadOrReport("workspace", workspace.load());
-    loadOrReport("library", library.load());
+    loadOrReport("library", library.ensureLoaded());
     loadOrReport("annotations", annotations.load());
     loadOrReport("queue", queue.load());
     loadOrReport("settings", settings.load());
@@ -43,7 +46,7 @@
   <header class="topbar" class:zen-hidden={zen.active}>
     <span class="logo">fieldnotes</span>
     <span class="divider">/</span>
-    <span class="workspace">{workspace.name}</span>
+    {#if workspace.loaded}<LayoutMenu />{/if}
     <div class="spacer"></div>
     <SettingsMenu />
     <ModulePicker />
@@ -67,6 +70,9 @@
     </div>
   {/if}
 </div>
+
+<DropOverlay />
+<Toasts />
 
 <style>
   .app {
@@ -107,11 +113,6 @@
 
   .divider {
     color: var(--text-dim);
-  }
-
-  .workspace {
-    color: var(--text-dim);
-    font-size: 0.9rem;
   }
 
   .spacer {

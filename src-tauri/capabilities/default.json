@@ -2,20 +2,29 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
     "opener:default",
     "store:default",
+    "dialog:allow-save",
+    "fs:allow-write-text-file",
+    "core:window:allow-set-fullscreen",
     {
       "identifier": "http:default",
       "allow": [
-        { "url": "https://**" },
-        { "url": "http://localhost:*" }
+        {
+          "url": "https://**"
+        },
+        {
+          "url": "http://localhost:*"
+        },
+        {
+          "url": "http://127.0.0.1:*"
+        }
       ]
-    },
-    "dialog:allow-open",
-    "dialog:allow-save",
-    "core:window:allow-set-fullscreen"
+    }
   ]
 }

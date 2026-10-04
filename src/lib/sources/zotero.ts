@@ -1,4 +1,4 @@
-import { fetchText } from "$lib/core/net";
+import { httpFetch, isAbortError } from "$lib/core/net";
 import type { Paper, PaperSource, SearchOptions, SearchParams, SearchResult } from "./types";
 
 // Zotero local API — Zotero must be running with its connector enabled.
@@ -33,11 +33,19 @@ interface ZoteroItem {
   data: ZoteroItemData;
 }
 
+async function zoteroGet(url: string, signal?: AbortSignal): Promise<string> {
+  const res = await httpFetch(url, { signal });
+  if (!res.ok) throw new Error(`Zotero request failed (${res.status})`);
+  return res.text();
+}
+
 async function pingZotero(signal?: AbortSignal): Promise<boolean> {
   try {
-    await fetchText(`${LIBRARY}/items?limit=0&format=json`, { signal });
+    await zoteroGet(`${LIBRARY}/items?limit=0&format=json`, signal);
     return true;
-  } catch {
+  } catch (err) {
+    // A cancelled search is not "Zotero isn't running".
+    if (isAbortError(err)) throw err;
     return false;
   }
 }
@@ -91,6 +99,7 @@ function itemToPaper(item: ZoteroItem): Paper {
 export const zotero: PaperSource = {
   id: "zotero",
   name: "Zotero",
+  shortName: "Zotero",
 
   async search(params: SearchParams, opts: SearchOptions = {}): Promise<SearchResult> {
     const running = await pingZotero(opts.signal);
@@ -108,7 +117,7 @@ export const zotero: PaperSource = {
     url.searchParams.set("limit", String(limit));
     url.searchParams.set("start", String(offset));
 
-    const text = await fetchText(url.toString(), { signal: opts.signal });
+    const text = await zoteroGet(url.toString(), opts.signal);
     const items = JSON.parse(text) as ZoteroItem[];
     const papers = items.map(itemToPaper);
 

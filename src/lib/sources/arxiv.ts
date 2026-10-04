@@ -1,91 +1,151 @@
-import { fetchText } from "$lib/core/net";
-import type { Paper, PaperSource, SearchOptions, SearchParams, SearchResult } from "./types";
+/**
+ * arXiv adapter (Atom API). Docs: https://info.arxiv.org/help/api/user-manual.html
+ *
+ * arXiv sends no CORS headers, so this only works inside the desktop app
+ * (requests go through the Rust-side HTTP plugin). There are no citation
+ * counts; every paper has a PDF.
+ */
+import { fetchWithRetry } from "../core/net";
+import { normalizeArxivId } from "./merge";
+import type {
+  Paper,
+  PaperSource,
+  SearchFilters,
+  SearchOptions,
+  SearchParams,
+  SearchResult,
+} from "./types";
 
-const ATOM = "http://www.w3.org/2005/Atom";
-const OPENSEARCH = "http://a9.com/-/spec/opensearch/1.1/";
-const ARXIV_NS = "http://arxiv.org/schemas/atom";
+const API = "https://export.arxiv.org/api/query";
 
-function textNS(el: Element | Document, ns: string, tag: string): string {
-  return el.getElementsByTagNameNS(ns, tag)[0]?.textContent?.trim() ?? "";
-}
+const collapse = (text: string | null | undefined): string =>
+  (text ?? "").replace(/\s+/g, " ").trim();
 
-function parseEntry(entry: Element): Paper | null {
-  const rawId = textNS(entry, ATOM, "id");
-  // arXiv uses this URL pattern for invalid query responses
-  if (rawId.includes("/api/errors")) return null;
+/**
+ * Free text → arXiv query grammar. Words are ANDed (`all:` searches title,
+ * abstract, authors…), "quoted phrases" stay together, and an upper-case OR /
+ * NOT between terms is honoured. Characters the grammar treats specially are
+ * stripped from the user's words rather than passed through.
+ */
+export function buildArxivQuery(query: string, filters?: SearchFilters): string {
+  const parts: string[] = [];
+  let op: "AND" | "OR" | "ANDNOT" = "AND";
 
-  // Strip version suffix: http://arxiv.org/abs/2301.00001v2 → 2301.00001
-  const arxivId =
-    rawId.replace(/^https?:\/\/arxiv\.org\/abs\//, "").replace(/v\d+$/, "") || null;
-
-  const title = textNS(entry, ATOM, "title").replace(/\s+/g, " ") || rawId;
-  const authors = Array.from(entry.getElementsByTagNameNS(ATOM, "author"))
-    .map((a) => textNS(a, ATOM, "name"))
-    .filter(Boolean);
-  const abstract = textNS(entry, ATOM, "summary").replace(/\s+/g, " ") || null;
-
-  const published = textNS(entry, ATOM, "published");
-  const yearNum = published ? parseInt(published.slice(0, 4), 10) : NaN;
-  const year = isNaN(yearNum) ? null : yearNum;
-
-  let url: string | null = null;
-  let pdfUrl: string | null = null;
-  for (const link of Array.from(entry.getElementsByTagNameNS(ATOM, "link"))) {
-    const rel = link.getAttribute("rel");
-    const href = link.getAttribute("href") ?? "";
-    if (rel === "alternate") url = href;
-    if (rel === "related" && link.getAttribute("title") === "pdf") pdfUrl = href;
+  for (const match of query.matchAll(/"([^"]*)"|(\S+)/g)) {
+    const phrase = match[1];
+    const word = match[2];
+    if (word && /^(AND|OR|NOT)$/.test(word)) {
+      op = word === "OR" ? "OR" : word === "NOT" ? "ANDNOT" : "AND";
+      continue;
+    }
+    const text = collapse((phrase ?? word).replace(/[()[\]{}:"+\\^~*?!]/g, " "));
+    if (!text) continue;
+    const quoted = phrase != null || /[^A-Za-z0-9]/.test(text);
+    if (parts.length > 0) parts.push(op);
+    parts.push(quoted ? `all:"${text}"` : `all:${text}`);
+    op = "AND";
   }
 
-  const doi = textNS(entry, ARXIV_NS, "doi") || null;
-  const category =
-    entry
-      .getElementsByTagNameNS(ARXIV_NS, "primary_category")[0]
-      ?.getAttribute("term") ?? null;
+  if (parts.length === 0) return "";
+  let q = parts.length > 1 ? `(${parts.join(" ")})` : parts[0];
 
-  return {
-    id: `arxiv:${arxivId ?? rawId}`,
-    source: "arxiv",
-    title,
-    authors,
-    year,
-    venue: category,
-    abstract,
-    tldr: null,
-    citationCount: null,
-    url,
-    pdfUrl,
-    doi,
-    arxivId,
-  };
+  const from = filters?.yearFrom;
+  const to = filters?.yearTo;
+  if (from != null || to != null) {
+    const start = String(from ?? 1991).padStart(4, "0");
+    const end = String(to ?? new Date().getFullYear()).padStart(4, "0");
+    q += ` AND submittedDate:[${start}01010000 TO ${end}12312359]`;
+  }
+  return q;
 }
 
-export function parseAtomXml(xml: string, offset: number, limit: number): SearchResult {
+function text(el: Element, tag: string): string {
+  return collapse(el.getElementsByTagName(tag)[0]?.textContent);
+}
+
+export interface ParsedFeed {
+  papers: Paper[];
+  total: number;
+  start: number;
+}
+
+export function parseArxivFeed(xml: string): ParsedFeed {
   const doc = new DOMParser().parseFromString(xml, "application/xml");
+  if (doc.getElementsByTagName("parsererror").length > 0) {
+    throw new Error("arXiv returned a response that could not be read.");
+  }
 
-  const totalStr =
-    doc.getElementsByTagNameNS(OPENSEARCH, "totalResults")[0]?.textContent ?? "0";
-  const total = parseInt(totalStr, 10) || 0;
+  const papers: Paper[] = [];
+  for (const entry of Array.from(doc.getElementsByTagName("entry"))) {
+    const rawId = text(entry, "id");
+    // arXiv reports query errors as a 200 with a single "Error" entry.
+    if (rawId.includes("/api/errors")) {
+      throw new Error(`arXiv: ${text(entry, "summary") || "the query was rejected"}`);
+    }
+    const arxivId = normalizeArxivId(rawId) ?? rawId.replace(/^.*\/abs\//, "").replace(/v\d+$/, "");
+    const category = entry.getElementsByTagName("arxiv:primary_category")[0]?.getAttribute("term");
+    const journalRef = text(entry, "arxiv:journal_ref");
+    const published = text(entry, "published");
+    const year = Number.parseInt(published.slice(0, 4), 10);
 
-  const entries = Array.from(doc.getElementsByTagNameNS(ATOM, "entry"));
-  const papers = entries.map(parseEntry).filter((p): p is Paper => p !== null);
+    papers.push({
+      id: `arxiv:${arxivId}`,
+      source: "arxiv",
+      title: text(entry, "title") || "Untitled",
+      authors: Array.from(entry.getElementsByTagName("author"))
+        .map((a) => collapse(a.getElementsByTagName("name")[0]?.textContent))
+        .filter(Boolean),
+      year: Number.isFinite(year) ? year : null,
+      venue: journalRef || (category ? `arXiv · ${category}` : "arXiv"),
+      abstract: text(entry, "summary") || null,
+      tldr: null,
+      citationCount: null,
+      url: `https://arxiv.org/abs/${arxivId}`,
+      pdfUrl: `https://arxiv.org/pdf/${arxivId}`,
+      doi: text(entry, "arxiv:doi") || null,
+      arxivId,
+    });
+  }
 
-  const nextOffset = offset + papers.length < total ? offset + limit : null;
-  return { papers, total, offset, nextOffset };
+  const num = (tag: string): number =>
+    Number.parseInt(doc.getElementsByTagName(tag)[0]?.textContent ?? "", 10) || 0;
+  return { papers, total: num("opensearch:totalResults"), start: num("opensearch:startIndex") };
 }
 
 export const arxiv: PaperSource = {
   id: "arxiv",
   name: "arXiv",
+  shortName: "arXiv",
 
   async search(params: SearchParams, opts: SearchOptions = {}): Promise<SearchResult> {
-    const url = new URL("https://export.arxiv.org/api/query");
-    url.searchParams.set("search_query", `all:${params.query}`);
-    url.searchParams.set("start", String(params.offset ?? 0));
-    url.searchParams.set("max_results", String(params.limit ?? 20));
-    url.searchParams.set("sortBy", "relevance");
+    const limit = params.limit ?? 20;
+    const offset = params.offset ?? 0;
+    const searchQuery = buildArxivQuery(params.query, params.filters);
+    if (!searchQuery) return { papers: [], total: 0, offset, nextOffset: null };
 
-    const xml = await fetchText(url.toString(), { signal: opts.signal });
-    return parseAtomXml(xml, params.offset ?? 0, params.limit ?? 20);
+    const url = new URL(API);
+    url.searchParams.set("search_query", searchQuery);
+    url.searchParams.set("start", String(offset));
+    url.searchParams.set("max_results", String(limit));
+    // arXiv can sort by date but has no citation data; "citations" falls back to relevance.
+    url.searchParams.set("sortBy", params.sort === "newest" ? "submittedDate" : "relevance");
+    url.searchParams.set("sortOrder", "descending");
+
+    const res = await fetchWithRetry(url, { signal: opts.signal });
+    if (res.status === 429) {
+      throw new Error("Rate limited by arXiv. Wait a few seconds and try again.");
+    }
+    if (!res.ok) {
+      throw new Error(`arXiv request failed (${res.status})`);
+    }
+
+    const { papers, total, start } = parseArxivFeed(await res.text());
+    const consumed = start + papers.length;
+    return {
+      papers,
+      total,
+      offset: start,
+      nextOffset: papers.length > 0 && consumed < total ? consumed : null,
+    };
   },
 };

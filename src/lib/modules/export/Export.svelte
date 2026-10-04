@@ -2,6 +2,7 @@
   import { library } from "$lib/core/library.svelte";
   import { annotations } from "$lib/core/annotations.svelte";
   import { toBibTeX, toMarkdown, toJSON } from "$lib/core/exporters";
+  import { saveTextFile } from "$lib/core/files";
   import type { ModuleInstance } from "$lib/core/types";
 
   let {}: { instance: ModuleInstance } = $props();
@@ -30,15 +31,6 @@
     message = "";
 
     try {
-      const { save } = await import("@tauri-apps/plugin-dialog");
-      const { invoke } = await import("@tauri-apps/api/core");
-
-      const path = await save({
-        defaultPath: `research-library.${EXT[format]}`,
-        filters: [{ name: LABEL[format], extensions: [EXT[format]] }],
-      });
-      if (!path) { status = "idle"; return; }
-
       const noteMap = includeAnnotations
         ? (annotations.notes as Record<string, string>)
         : {};
@@ -49,9 +41,10 @@
       else if (format === "markdown") content = toMarkdown(entries, noteMap);
       else content = toJSON(entries, noteMap);
 
-      await invoke("write_text_file", { path, content });
+      const result = await saveTextFile(`research-library.${EXT[format]}`, content);
+      if (result === "cancelled") { status = "idle"; return; }
       status = "done";
-      message = path.split(/[\\/]/).pop() ?? path;
+      message = LABEL[format];
     } catch (err) {
       status = "error";
       message = err instanceof Error ? err.message : String(err);
@@ -93,7 +86,7 @@
   </button>
 
   {#if status === "done"}
-    <p class="feedback ok">Saved to {message}</p>
+    <p class="feedback ok">Saved as {message}</p>
   {:else if status === "error"}
     <p class="feedback err">{message}</p>
   {:else if library.entries.length === 0}

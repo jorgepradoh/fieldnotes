@@ -5,8 +5,9 @@ export const libraryModule: ModuleDefinition = {
   id: "library",
   name: "Library",
   icon: "📚",
-  description: "Save papers and return to them across sessions",
+  description: "Your saved papers, PDFs, markdown notes and imported BibTeX",
   component: Library,
-  defaultSize: { w: 3, h: 6 },
-  minSize: { w: 2, h: 4 },
+  defaultSize: { w: 4, h: 7 },
+  minSize: { w: 3, h: 4 },
+  multiInstance: false,
 };
