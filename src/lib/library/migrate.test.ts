@@ -183,12 +183,34 @@ describe("migrateAnnotations", () => {
   });
 });
 
-describe("both, in the order the store runs them", () => {
+describe("both, in the order the store runs them (annotations, then queue)", () => {
   it("a note for a queued paper ends up on its record, and the rest wait", () => {
-    const afterQueue = migrateQueue(empty(), queueFile, NOW);
-    const out = migrateAnnotations(afterQueue, { "arxiv:1706.03762": "attention!", "s2:never-queued": "orphan" });
+    const afterNotes = migrateAnnotations(empty(), { "arxiv:1706.03762": "attention!", "s2:never-queued": "orphan" });
+    const out = migrateQueue(afterNotes, queueFile, NOW);
     expect(out.entries.find((e) => e.paper.id === "arxiv:1706.03762")).toMatchObject({ status: "reading", note: "attention!" });
     expect([...out.orphans]).toEqual([["s2:never-queued", "orphan"]]);
     expect(out.migrated).toEqual({ queue: true, annotations: true });
+  });
+
+  it("a note keyed by an id that merged into another entry is not stranded as an orphan", () => {
+    const queue = [
+      { paper: paper({ id: "s2:abc", doi: "10.1000/same" }), status: "reading", addedAt: "2026-09-01T00:00:00.000Z" },
+      { paper: paper({ id: "arxiv:123", doi: "10.1000/SAME" }), status: "to-read", addedAt: "2026-09-02T00:00:00.000Z" },
+    ];
+    const out = migrateQueue(migrateAnnotations(empty(), { "arxiv:123": "written when it was known as arxiv:123" }), queue, NOW);
+    expect(out.entries).toHaveLength(1);
+    expect(out.entries[0].paper.id).toBe("s2:abc");
+    expect(out.entries[0].note).toBe("written when it was known as arxiv:123");
+    expect(out.orphans.size).toBe(0);
+  });
+
+  it("notes for ids on both sides of a merge are joined, not overwritten", () => {
+    const queue = [
+      { paper: paper({ id: "s2:abc", doi: "10.1000/same" }), status: "reading", addedAt: "2026-09-01T00:00:00.000Z" },
+      { paper: paper({ id: "arxiv:123", doi: "10.1000/same" }), status: "to-read", addedAt: "2026-09-02T00:00:00.000Z" },
+    ];
+    const out = migrateQueue(migrateAnnotations(empty(), { "s2:abc": "first note", "arxiv:123": "second note" }), queue, NOW);
+    expect(out.entries).toHaveLength(1);
+    expect(out.entries[0].note).toBe("first note\n\n---\n\nsecond note");
   });
 });

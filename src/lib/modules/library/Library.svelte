@@ -74,6 +74,9 @@
   }
 
   function tagKey(e: KeyboardEvent, id: string): void {
+    // The Enter that confirms an IME candidate (keyCode 229 in browsers that do not set isComposing)
+    // belongs to the composition, not to the tag box.
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === "Enter" || e.key === ",") {
       e.preventDefault();
       addTags(id, e.currentTarget as HTMLInputElement);
@@ -162,7 +165,11 @@
           </button>
           <span class="actions">
             {#if confirmId === paper.id}
-              <button type="button" class="danger" onclick={() => void remove(paper.id)}>Remove</button>
+              <button
+                type="button"
+                class="danger"
+                title="Removes the paper, its tags and its reading status. A note is kept and comes back if you save the paper again."
+                onclick={() => void remove(paper.id)}>Remove</button>
               <button type="button" onclick={() => (confirmId = null)}>Keep</button>
             {:else}
               {#if paper.localFile?.kind !== "pdf" && paper.localFile?.kind !== "markdown"}

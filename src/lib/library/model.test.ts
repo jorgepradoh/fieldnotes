@@ -10,6 +10,7 @@ import {
   normalizeTags,
   parseEntry,
   parseLibraryFile,
+  removeEntry,
   serializeLibrary,
   tagCounts,
   withNote,
@@ -172,7 +173,8 @@ describe("parseLibraryFile", () => {
     });
     expect(parsed.entries[0]).toMatchObject({ status: "reading", tags: ["x"], note: "n" });
     expect([...parsed.orphans]).toEqual([["s2:gone", "a note"]]);
-    expect(parsed.migrated).toEqual({ queue: true });
+    // Only an exact `true` counts for a flag this build owns; flags it does not know are kept.
+    expect(parsed.migrated).toEqual({ queue: true, other: true });
   });
 
   it("keeps top-level fields it does not know and drops entries it cannot use", () => {
@@ -214,6 +216,16 @@ describe("serializeLibrary", () => {
   it("carries unknown top-level fields through but never lets them override the ones it owns", () => {
     const out = serializeLibrary(empty(), { sync: { rev: 9 }, version: 99, entries: "evil" });
     expect(out).toEqual({ sync: { rev: 9 }, version: 2, entries: [] });
+  });
+
+  it("keeps migration flags it does not know through a load and write", () => {
+    const parsed = parseLibraryFile({ version: 2, entries: [], migrated: { queue: true, annotations: true, tags2: true } });
+    expect(serializeLibrary(parsed).migrated).toEqual({ queue: true, annotations: true, tags2: true });
+  });
+
+  it("writes `migrated` for a flag only this build does not know, and not at all when there are none", () => {
+    expect(serializeLibrary({ ...empty(), migrated: { future: true } }).migrated).toEqual({ future: true });
+    expect(serializeLibrary(empty())).not.toHaveProperty("migrated");
   });
 
   it("round-trips an entry with unknown fields unchanged", () => {
@@ -338,6 +350,25 @@ describe("addPapers", () => {
     expect(out.data.orphans.size).toBe(0);
   });
 
+  it("merges into the same entry findEntryIndex resolves to when two entries share a title", () => {
+    const T = "A rather long title that is distinctive enough to match on";
+    const entries = [entry({ paper: paper({ id: "file-one", title: T }) }), entry({ paper: paper({ id: "file-two", title: T }) })];
+    const probe = paper({ id: "s2:search", title: T, abstract: "from search" });
+    expect(entries[findEntryIndex(entries, probe)].paper.id).toBe("file-one");
+    const out = addPapers({ ...empty(), entries }, [probe], 9);
+    expect(out.ids).toEqual(["file-one"]);
+    expect(out.data.entries[0].paper.abstract).toBe("from search");
+    expect(out.data.entries[1].paper.abstract).toBeNull();
+  });
+
+  it("prefers the earliest entry even when a later one matches by id", () => {
+    const T = "A rather long title that is distinctive enough to match on";
+    const entries = [entry({ paper: paper({ id: "file-one", title: T }) }), entry({ paper: paper({ id: "file-two", title: T }) })];
+    const probe = paper({ id: "file-two", title: T });
+    expect(findEntryIndex(entries, probe)).toBe(0);
+    expect(addPapers({ ...empty(), entries }, [probe], 9).ids).toEqual(["file-one"]);
+  });
+
   it("does not modify the data it was given", () => {
     const saved = entry({ paper: paper({ id: "a", doi: "10.1000/x" }) });
     const data: LibraryData = { entries: [saved], orphans: new Map([["b", "n"]]), migrated: {} };
@@ -371,5 +402,37 @@ describe("findEntryIndex", () => {
     expect(findEntryIndex(entries, paper({ id: "zz", doi: "https://doi.org/10.1000/X" }))).toBe(0);
     expect(findEntryIndex(entries, paper({ id: "zz", arxivId: "arXiv:1706.03762v5" }))).toBe(1);
     expect(findEntryIndex(entries, paper({ id: "zz" }))).toBe(-1);
+  });
+});
+
+describe("removeEntry", () => {
+  const withNoteAndState = entry({ paper: paper({ id: "a" }), status: "reading", statusAt: 3, tags: ["t"], note: "my note" });
+
+  it("removes the entry, with its status and tags, but keeps the note waiting under its id", () => {
+    const out = removeEntry({ ...empty(), entries: [withNoteAndState, entry({ paper: paper({ id: "b" }) })] }, "a");
+    expect(out.entries.map((e) => e.paper.id)).toEqual(["b"]);
+    expect([...out.orphans]).toEqual([["a", "my note"]]);
+  });
+
+  it("brings the note back when the same paper is added again", () => {
+    const removed = removeEntry({ ...empty(), entries: [withNoteAndState] }, "a");
+    const again = addPapers(removed, [paper({ id: "a" })], 5);
+    expect(again.data.entries[0]).toMatchObject({ note: "my note" });
+    expect(again.data.entries[0]).not.toHaveProperty("status");
+    expect(again.data.orphans.size).toBe(0);
+  });
+
+  it("leaves no orphan for an entry without a note, and joins with one already waiting", () => {
+    expect(removeEntry({ ...empty(), entries: [entry({ paper: paper({ id: "a" }) })] }, "a").orphans.size).toBe(0);
+    const out = removeEntry({ ...empty(), entries: [withNoteAndState], orphans: new Map([["a", "older"]]) }, "a");
+    expect(out.orphans.get("a")).toBe("older\n\n---\n\nmy note");
+  });
+
+  it("returns the same data for an id that is not there, and does not modify its input", () => {
+    const data = { ...empty(), entries: [withNoteAndState] };
+    expect(removeEntry(data, "nope")).toBe(data);
+    removeEntry(data, "a");
+    expect(data.entries).toHaveLength(1);
+    expect(data.orphans.size).toBe(0);
   });
 });

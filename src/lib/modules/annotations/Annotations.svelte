@@ -59,7 +59,8 @@
     if (!pending) return;
     const { id, text: latest } = pending;
     pending = null;
-    library.setNote(id, latest);
+    // False only when the paper was removed from the library while the edit was waiting.
+    if (!library.setNote(id, latest)) toast("Your last edit to a note was not saved: that paper is no longer in your library.", "error");
   }
 
   onDestroy(flush);

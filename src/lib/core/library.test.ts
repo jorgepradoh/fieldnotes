@@ -22,6 +22,9 @@ vi.mock("./storage", () => ({
     })();
   },
 }));
+const toastSpy = vi.hoisted(() => vi.fn());
+vi.mock("./toast.svelte", () => ({ toast: toastSpy }));
+
 /** Lets a test hold writes open, fail them (asynchronously or by throwing at once), and count them. */
 const saves: { started: number; finished: number; gate: Promise<void> | null; fail: boolean; throwSync: boolean } = {
   started: 0,
@@ -432,13 +435,23 @@ describe("status, notes and tags", () => {
     expect(lib.entries[0].paper.abstract).toBe("fresh abstract");
   });
 
-  it("removing an entry takes its status, tags and note with it", async () => {
+  it("removing an entry takes its status and tags with it but keeps its note, which returns if the paper is saved again", async () => {
     const lib = await fresh();
     lib.add(paper({ id: "a" }));
     lib.setStatus("a", "done");
+    lib.addTag("a", "gone");
+    lib.setNote("a", "a long note I wrote");
     await lib.remove("a");
     expect(lib.byStatus("done")).toEqual([]);
     expect(lib.tags()).toEqual([]);
+    expect(lib.orphans.get("a")).toBe("a long note I wrote");
+    expect((disk.get("library.json:library") as { orphanNotes: Record<string, string> }).orphanNotes).toEqual({ a: "a long note I wrote" });
+
+    lib.add(paper({ id: "a" }));
+    expect(lib.noteOf("a")).toBe("a long note I wrote");
+    expect(lib.statusOf("a")).toBeUndefined();
+    expect(lib.tags()).toEqual([]);
+    expect(lib.orphans.size).toBe(0);
   });
 });
 
@@ -530,10 +543,22 @@ describe("importing the old queue and annotations", () => {
     expect(lib.entries).toHaveLength(1);
     expect(lib.entries[0]).toMatchObject({ addedAt: 5, status: "done" });
     expect(lib.entries[0].paper.id).toBe("bib:1");
-    // The note was keyed by the id the paper had in search, which is the id of the queued copy that merged in.
-    expect(lib.hasOrphanNote(paper({ id: "s2:9" }))).toBe(true);
-    expect(lib.ensure(paper({ id: "s2:9", doi: "10.1000/x" }))).toBe("bib:1");
+    // The note was keyed by the id the paper had in search, which is the id of the queued copy that
+    // merged into bib:1: it lands on that record straight away rather than waiting as an orphan.
     expect(lib.noteOf("bib:1")).toBe("annotated under the search result's id");
+    expect(lib.hasOrphanNote(paper({ id: "s2:9" }))).toBe(false);
+  });
+
+  it("gives a note to the record its paper merged into, even when it was annotated under another id", async () => {
+    oldStores.set("queue.json:queue", [
+      { paper: paper({ id: "s2:abc", doi: "10.1000/same", title: "Merged paper, long enough title" }), status: "reading", addedAt: "2026-09-01T00:00:00.000Z" },
+      { paper: paper({ id: "arxiv:123", doi: "10.1000/same", title: "Merged paper, long enough title" }), status: "to-read", addedAt: "2026-09-02T00:00:00.000Z" },
+    ]);
+    oldStores.set("annotations.json:annotations", { "arxiv:123": "note under the other id" });
+    const lib = await fresh();
+    expect(lib.entries).toHaveLength(1);
+    expect(lib.noteOf("s2:abc")).toBe("note under the other id");
+    expect(lib.orphans.size).toBe(0);
   });
 
   it("still loads, and tries again next time, when an old store cannot be read", async () => {
@@ -640,6 +665,98 @@ describe("writing", () => {
     await settle();
     expect((disk.get("library.json:library") as { entries: unknown[] }).entries).toHaveLength(2);
     error.mockRestore();
+  });
+
+  describe("when a write fails", () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      toastSpy.mockClear();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+    const quiet = () => vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const flushPromises = async (ms: number) => vi.advanceTimersByTimeAsync(ms);
+
+    it("tells the user once, not on every attempt", async () => {
+      const error = quiet();
+      const lib = await fresh();
+      saves.fail = true;
+      lib.add(paper({ id: "a" }));
+      await flushPromises(0);
+      lib.add(paper({ id: "b" })); // writes at once (cancelling the 5 s retry) and fails again: next retry in 10 s
+      await flushPromises(0);
+      expect(saves.started).toBe(2);
+      await flushPromises(10_000); // the retry fails as well
+      expect(saves.started).toBe(3);
+      expect(toastSpy).toHaveBeenCalledTimes(1);
+      expect(toastSpy).toHaveBeenCalledWith(expect.stringContaining("Could not save your library"), "error");
+      error.mockRestore();
+    });
+
+    it("retries on its own, with a growing delay, and the data lands once the disk recovers", async () => {
+      const error = quiet();
+      const lib = await fresh();
+      saves.fail = true;
+      lib.add(paper({ id: "a" })); // attempt 1 fails; retry in 5 s
+      await flushPromises(0);
+      expect(saves.started).toBe(1);
+      await flushPromises(4_999);
+      expect(saves.started).toBe(1);
+      await flushPromises(1); // attempt 2 fails; retry in 10 s
+      expect(saves.started).toBe(2);
+      await flushPromises(9_999);
+      expect(saves.started).toBe(2);
+      saves.fail = false; // the disk recovers; no further edit is made
+      await flushPromises(1);
+      expect(saves.finished).toBe(1);
+      expect((disk.get("library.json:library") as { entries: unknown[] }).entries).toHaveLength(1);
+      await flushPromises(120_000);
+      expect(saves.started).toBe(3); // and it stops retrying
+      error.mockRestore();
+    });
+
+    it("tells the user again after a success, if the next failure is a new one", async () => {
+      const error = quiet();
+      const lib = await fresh();
+      saves.fail = true;
+      lib.add(paper({ id: "a" }));
+      await flushPromises(0);
+      saves.fail = false;
+      await flushPromises(5_000);
+      expect(toastSpy).toHaveBeenCalledTimes(1);
+      saves.fail = true;
+      lib.add(paper({ id: "b" }));
+      await flushPromises(0);
+      expect(toastSpy).toHaveBeenCalledTimes(2);
+      error.mockRestore();
+    });
+
+    it("caps the delay between retries", async () => {
+      const error = quiet();
+      const lib = await fresh();
+      saves.fail = true;
+      lib.add(paper({ id: "a" }));
+      await flushPromises(0);
+      for (const wait of [5_000, 10_000, 20_000, 40_000, 60_000, 60_000]) await flushPromises(wait);
+      expect(saves.started).toBe(7);
+      error.mockRestore();
+    });
+
+    it("a later edit writes at once and cancels the pending retry", async () => {
+      const error = quiet();
+      const lib = await fresh();
+      saves.fail = true;
+      lib.add(paper({ id: "a" }));
+      await flushPromises(0);
+      saves.fail = false;
+      lib.add(paper({ id: "b" }));
+      await flushPromises(0);
+      expect(saves.finished).toBe(1);
+      await flushPromises(60_000);
+      expect(saves.started).toBe(2); // the retry timer was cancelled, so no third write
+      error.mockRestore();
+    });
   });
 
   it("keeps writing after a write fails", async () => {

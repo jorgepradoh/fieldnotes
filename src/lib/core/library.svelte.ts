@@ -11,6 +11,7 @@ import {
   adoptOrphan,
   findEntryIndex,
   parseLibraryFile,
+  removeEntry,
   serializeLibrary,
   tagCounts,
   withNote,
@@ -27,9 +28,12 @@ import { queueColumns } from "../library/queue";
 import type { LocalFileRef, Paper } from "../sources/types";
 import { deleteBlob, getBlob, putBlob } from "./blobs";
 import { loadJson, loadLegacy, saveJson } from "./storage";
+import { toast } from "./toast.svelte";
 
 const FILE = "library.json";
 const KEY = "library";
+const RETRY_BASE_MS = 5_000;
+const RETRY_MAX_MS = 60_000;
 
 export interface AddResult {
   /** Papers that were new to the library. */
@@ -50,6 +54,9 @@ export class LibraryState {
   private loading: Promise<void> | null = null;
   private writing = false;
   private dirty = false;
+  /** Failed writes in a row, and the pending retry. */
+  private failures = 0;
+  private retry: ReturnType<typeof setTimeout> | null = null;
 
   ensureLoaded(): Promise<void> {
     this.loading ??= this.load();
@@ -67,11 +74,16 @@ export class LibraryState {
     if (data !== stored) this.persist();
   }
 
-  /** Imports the old queue and annotations once. A store that can't be read is retried next launch. */
+  /**
+   * Imports the old annotations and queue once. A store that can't be read is retried next launch.
+   * Annotations go first: notes that match no entry wait as orphans, and the queue import then
+   * hands each queued paper the note waiting under the id it was queued as, even when that paper
+   * merges into an entry that has another id.
+   */
   private async migrateOldStores(data: LibraryData): Promise<LibraryData> {
     let next = data;
-    if (!next.migrated.queue) next = migrateQueue(next, await readOldStore("queue.json", "queue"), Date.now());
     if (!next.migrated.annotations) next = migrateAnnotations(next, await readOldStore("annotations.json", "annotations"));
+    if (!next.migrated.queue) next = migrateQueue(next, await readOldStore("queue.json", "queue"), Date.now());
     return next;
   }
 
@@ -209,11 +221,11 @@ export class LibraryState {
     return this.addMany([paper]);
   }
 
+  /** Removes a paper with its tags and status; its note is kept waiting under its id (see removeEntry). */
   async remove(id: string): Promise<void> {
     const entry = this.entries.find((e) => e.paper.id === id);
     if (!entry) return;
-    this.entries = this.entries.filter((e) => e.paper.id !== id);
-    this.persist();
+    this.commit(removeEntry(this.data(), id));
     await this.dropFileIfUnused(entry.paper.localFile);
   }
 
@@ -300,7 +312,9 @@ export class LibraryState {
   /**
    * Writes the whole library. The first write goes out at once; writes asked for while one
    * is in flight collapse into a single follow-up with the latest state, so typing a note
-   * does not queue a rewrite of the file per pause.
+   * does not queue a rewrite of the file per pause. A failed write is reported once (not per
+   * attempt) and retried with a growing delay, so a transient failure does not leave the latest
+   * changes only in memory until some unrelated edit happens to trigger another write.
    */
   private persist(): void {
     if (this.writing) {
@@ -309,6 +323,8 @@ export class LibraryState {
     }
     this.writing = true;
     const write = (): void => {
+      if (this.retry) clearTimeout(this.retry);
+      this.retry = null;
       this.dirty = false;
       let saving: Promise<void>;
       try {
@@ -317,9 +333,24 @@ export class LibraryState {
         saving = Promise.reject(err); // a throw here must not leave `writing` set and stop all saving
       }
       saving
-        .catch((err: unknown) => {
-          console.error("Could not save the library", err);
-        })
+        .then(
+          () => {
+            this.failures = 0;
+          },
+          (err: unknown) => {
+            console.error("Could not save the library", err);
+            if (this.failures++ === 0) {
+              toast(
+                "Could not save your library. Your latest changes are only in memory for now; saving will be retried.",
+                "error",
+              );
+            }
+            this.retry = setTimeout(() => {
+              this.retry = null;
+              this.persist();
+            }, Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** (this.failures - 1)));
+          },
+        )
         .finally(() => {
           if (this.dirty) write();
           else this.writing = false;

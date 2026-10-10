@@ -1,6 +1,9 @@
 /**
  * One-time import of the two stores the library replaced: the reading queue
- * (queue.json) and per-paper annotations (annotations.json). Both functions are
+ * (queue.json) and per-paper annotations (annotations.json). The store runs the
+ * annotations first, so notes that match no entry wait as orphans and the queue
+ * import (through addPapers) hands each queued paper the note waiting under the id
+ * it was queued as, even when that paper merges into an entry with another id. Both functions are
  * pure; they receive whatever the old store held, return the new library data,
  * and set `migrated.<name>` only when the input was a usable store so a repeat
  * run is a no-op. The old files are never touched or deleted.

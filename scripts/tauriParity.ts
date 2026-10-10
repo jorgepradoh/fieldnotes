@@ -133,10 +133,10 @@ function main(args: string[]): number {
     const packageLock = read(args[0] ?? new URL("../package-lock.json", import.meta.url));
     const cargoLock = read(args[1] ?? new URL("../src-tauri/Cargo.lock", import.meta.url));
     const report = checkParity(packageLock, cargoLock);
-    console.log(formatReport(report));
+    process.stdout.write(`${formatReport(report)}\n`);
     return report.ok ? 0 : 1;
   } catch (err) {
-    console.error(`error: ${err instanceof Error ? err.message : String(err)}`);
+    process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;
   }
 }

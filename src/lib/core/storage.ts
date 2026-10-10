@@ -76,14 +76,6 @@ export async function loadLegacy<T>(file: string, key: string): Promise<T | null
 }
 
 /** The pre-layouts (v0.1) single-workspace record, read once for migration. */
-export async function loadLegacyWorkspace<T>(): Promise<T | null> {
-  if (inTauri()) {
-    return loadJson<T>("workspace.json", "workspace");
-  }
-  try {
-    const raw = localStorage.getItem("workspace");
-    return raw ? (JSON.parse(raw) as T) : null;
-  } catch {
-    return null;
-  }
+export function loadLegacyWorkspace<T>(): Promise<T | null> {
+  return loadLegacy<T>("workspace.json", "workspace");
 }

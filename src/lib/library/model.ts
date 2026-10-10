@@ -26,10 +26,11 @@ export interface LibraryEntry {
   note?: string;
 }
 
-/** Which one-time imports of the old stores have already run. */
+/** Which one-time imports of the old stores have already run. Flags this build does not know are kept. */
 export interface Migrated {
   queue?: true;
   annotations?: true;
+  [other: string]: unknown;
 }
 
 /** Everything in library.json that this build understands. */
@@ -148,11 +149,10 @@ export function parseLibraryFile(raw: unknown): ParsedLibrary {
   if (!isRecord(raw) || !Array.isArray(raw.entries)) return { entries: [], orphans: new Map(), migrated: {}, extra: {} };
 
   const entries = raw.entries.map(parseEntry).filter((e): e is LibraryEntry => e !== null);
-  const migrated: Migrated = {};
-  if (isRecord(raw.migrated)) {
-    if (raw.migrated.queue === true) migrated.queue = true;
-    if (raw.migrated.annotations === true) migrated.annotations = true;
-  }
+  const migrated: Migrated = isRecord(raw.migrated) ? { ...raw.migrated } : {};
+  // A flag only counts when it is exactly `true`; anything else means that import has not run.
+  if (migrated.queue !== true) delete migrated.queue;
+  if (migrated.annotations !== true) delete migrated.annotations;
   const extra: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(raw)) if (!KNOWN_FILE_KEYS.has(key)) extra[key] = value;
   return { entries, orphans: parseOrphans(raw.orphanNotes), migrated, extra };
@@ -162,7 +162,7 @@ export function parseLibraryFile(raw: unknown): ParsedLibrary {
 export function serializeLibrary(data: LibraryData, extra: Record<string, unknown> = {}): Record<string, unknown> {
   const file: Record<string, unknown> = { ...extra, version: 2, entries: data.entries };
   if (data.orphans.size > 0) file.orphanNotes = Object.fromEntries(data.orphans);
-  if (data.migrated.queue || data.migrated.annotations) file.migrated = { ...data.migrated };
+  if (Object.keys(data.migrated).length > 0) file.migrated = { ...data.migrated };
   return file;
 }
 
@@ -272,9 +272,11 @@ export function addPapers(data: LibraryData, papers: readonly Paper[], now: numb
   const orphans = new Map(data.orphans);
   const byId = new Map<string, number>();
   const byKey = new Map<string, number>();
+  // The first entry wins, as in findEntryIndex: two entries can share a title on purpose (two
+  // different files), and "the record" for a paper must be the same one everywhere.
   const index = (paper: Paper, at: number): void => {
-    byId.set(paper.id, at);
-    for (const key of paperKeys(paper)) byKey.set(key, at);
+    if (!byId.has(paper.id)) byId.set(paper.id, at);
+    for (const key of paperKeys(paper)) if (!byKey.has(key)) byKey.set(key, at);
   };
   entries.forEach((e, i) => index(e.paper, i));
 
@@ -282,7 +284,8 @@ export function addPapers(data: LibraryData, papers: readonly Paper[], now: numb
   const ids: string[] = [];
   let merged = 0;
   papers.forEach((paper, i) => {
-    const hit = byId.get(paper.id) ?? paperKeys(paper).map((k) => byKey.get(k)).find((at) => at !== undefined);
+    const matches = [byId.get(paper.id), ...paperKeys(paper).map((k) => byKey.get(k))].filter((at): at is number => at !== undefined);
+    const hit = matches.length > 0 ? Math.min(...matches) : undefined;
     let at: number;
     if (hit !== undefined) {
       entries[hit] = { ...entries[hit], paper: enrich(entries[hit].paper, paper) };
@@ -300,4 +303,17 @@ export function addPapers(data: LibraryData, papers: readonly Paper[], now: numb
     ids.push(entries[at].paper.id);
   });
   return { data: { ...data, entries, orphans }, added, merged, ids };
+}
+
+/**
+ * Removes an entry. Its tags and status go with it, but a note is kept waiting under its id, as
+ * the old annotations store did: saving the same paper again brings it back.
+ */
+export function removeEntry(data: LibraryData, id: string): LibraryData {
+  const at = data.entries.findIndex((e) => e.paper.id === id);
+  if (at < 0) return data;
+  const orphans = new Map(data.orphans);
+  const note = data.entries[at].note;
+  if (note !== undefined) orphans.set(id, mergeNotes(orphans.get(id), note));
+  return { ...data, entries: data.entries.filter((_, i) => i !== at), orphans };
 }
