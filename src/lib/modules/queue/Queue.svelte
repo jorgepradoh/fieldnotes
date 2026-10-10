@@ -1,7 +1,9 @@
 <script lang="ts">
   import { on, emit } from "$lib/core/bus.svelte";
-  import { queue } from "$lib/core/queue.svelte";
-  import type { QueueStatus } from "$lib/core/queue.svelte";
+  import { library } from "$lib/core/library.svelte";
+  import { toast } from "$lib/core/toast.svelte";
+  import { STATUSES } from "$lib/library/model";
+  import { ADVANCE_LABEL, STATUS_LABEL, nextStatus, queueColumns } from "$lib/library/queue";
   import type { Paper } from "$lib/sources/types";
   import type { ModuleInstance } from "$lib/core/types";
 
@@ -9,23 +11,29 @@
 
   let current = $state<Paper | null>(null);
 
+  void library.ensureLoaded();
+
   $effect(() =>
     on("paper:selected", ({ paper }) => {
       current = paper;
     }),
   );
 
-  const COLUMNS: { status: QueueStatus; label: string }[] = [
-    { status: "to-read", label: "To Read" },
-    { status: "reading", label: "Reading" },
-    { status: "done", label: "Done" },
-  ];
+  const columns = $derived(queueColumns(library.entries));
+  // The selected paper may be a search result; its record is the library entry it matches.
+  const currentId = $derived(current ? library.idFor(current) : undefined);
+  const queued = $derived(currentId !== undefined && library.statusOf(currentId) !== undefined);
 
-  const ADVANCE_LABEL: Record<QueueStatus, string> = {
-    "to-read": "Start →",
-    reading: "Done →",
-    done: "Remove",
-  };
+  async function enqueue(paper: Paper): Promise<void> {
+    try {
+      await library.ensureLoaded();
+      const wasSaved = library.idFor(paper) !== undefined;
+      library.setStatus(library.ensure(paper), "to-read");
+      if (!wasSaved) toast(`Saved “${paper.title}” to your library and added it to To Read.`, "success");
+    } catch (err) {
+      toast(`Could not queue the paper: ${err instanceof Error ? err.message : String(err)}`, "error");
+    }
+  }
 
   function authorLine(paper: Paper): string {
     const names = paper.authors.slice(0, 2).join(", ");
@@ -34,24 +42,25 @@
 </script>
 
 <div class="queue">
-  {#if current && !queue.has(current.id)}
+  {#if current && !queued}
+    {@const paper = current}
     <div class="banner">
-      <span class="banner-title" title={current.title}>{current.title}</span>
-      <button class="add-btn" onclick={() => current && queue.add(current)}>+ Queue</button>
+      <span class="banner-title" title={paper.title}>{paper.title}</span>
+      <button class="add-btn" onclick={() => void enqueue(paper)}>+ Queue</button>
     </div>
   {/if}
 
   <div class="columns">
-    {#each COLUMNS as col}
-      {@const entries = queue.column(col.status)}
+    {#each STATUSES as status (status)}
+      {@const entries = columns[status]}
       <div class="col">
         <div class="col-header">
-          <span class="col-label">{col.label}</span>
+          <span class="col-label">{STATUS_LABEL[status]}</span>
           <span class="col-count">{entries.length}</span>
         </div>
         <ul>
           {#each entries as { paper } (paper.id)}
-            <li class:active={current?.id === paper.id}>
+            <li class:active={currentId === paper.id}>
               <button class="paper" onclick={() => emit("paper:selected", { paper })}>
                 <span class="title">{paper.title}</span>
                 <span class="meta">
@@ -61,15 +70,16 @@
               <div class="actions">
                 <button
                   class="advance"
-                  onclick={() => queue.advance(paper.id)}
-                  title={ADVANCE_LABEL[col.status]}
+                  onclick={() => library.setStatus(paper.id, nextStatus(status))}
+                  title={ADVANCE_LABEL[status]}
                 >
-                  {ADVANCE_LABEL[col.status]}
+                  {ADVANCE_LABEL[status]}
                 </button>
                 <button
                   class="remove"
-                  onclick={() => queue.remove(paper.id)}
+                  onclick={() => library.setStatus(paper.id, null)}
                   aria-label="Remove from queue"
+                  title="Take off the queue (stays in your library)"
                 >×</button>
               </div>
             </li>

@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { onDestroy, untrack } from "svelte";
   import { on } from "$lib/core/bus.svelte";
-  import { annotations } from "$lib/core/annotations.svelte";
+  import { library } from "$lib/core/library.svelte";
+  import { toast } from "$lib/core/toast.svelte";
   import Editor from "$lib/components/Editor.svelte";
   import Markdown from "$lib/components/Markdown.svelte";
   import type { Paper } from "$lib/sources/types";
@@ -12,24 +14,64 @@
   let preview = $state(false);
   let text = $state("");
 
+  void library.ensureLoaded();
+
+  // The note lives on the library entry, so a paper that arrives under another source's id
+  // finds the same note. Until the paper is saved there is no record to write to.
+  const recordId = $derived(paper ? library.idFor(paper) : undefined);
+  const noteWaiting = $derived(paper !== null && recordId === undefined && library.hasOrphanNote(paper));
+
   $effect(() =>
     on("paper:selected", ({ paper: selected }) => {
+      flush(); // the previous paper's last edit must not be lost or land on the new one
       paper = selected;
       preview = false;
-      text = annotations.get(selected.id);
     }),
   );
 
+  // Load the note when the record changes. Reading the note itself is untracked: otherwise
+  // every save would reload the text and fight the cursor.
+  $effect(() => {
+    const selected = paper;
+    const id = recordId;
+    untrack(() => {
+      // A note written under this paper's own id before the library was the one record
+      // is brought onto the record it matches.
+      if (selected && id && library.hasOrphanNote(selected)) library.ensure(selected);
+      text = id ? library.noteOf(id) : "";
+    });
+  });
+
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  let pending: { id: string; text: string } | null = null;
 
   function handleChange(t: string): void {
     text = t;
-    if (!paper) return;
+    if (!recordId) return;
+    pending = { id: recordId, text: t };
     if (saveTimer) clearTimeout(saveTimer);
-    const pid = paper.id;
-    saveTimer = setTimeout(() => {
-      annotations.set(pid, t);
-    }, 400);
+    saveTimer = setTimeout(flush, 400);
+  }
+
+  function flush(): void {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = null;
+    if (!pending) return;
+    const { id, text: latest } = pending;
+    pending = null;
+    library.setNote(id, latest);
+  }
+
+  onDestroy(flush);
+
+  function save(): void {
+    if (!paper) return;
+    try {
+      library.ensure(paper);
+      toast(`Saved “${paper.title}” to your library.`, "success");
+    } catch (err) {
+      toast(`Could not save the paper: ${err instanceof Error ? err.message : String(err)}`, "error");
+    }
   }
 </script>
 
@@ -38,6 +80,19 @@
     <p class="empty">
       Select a paper in <strong>Paper Search</strong> to annotate it here.
     </p>
+  {:else if !library.loaded}
+    <p class="empty">Loading…</p>
+  {:else if recordId === undefined}
+    <div class="header">
+      <span class="paper-title" title={paper.title}>{paper.title}</span>
+    </div>
+    <div class="unsaved">
+      <p>Save this paper to your library to add notes to it.</p>
+      {#if noteWaiting}
+        <p class="hint">You wrote a note on this paper in an earlier version. Saving it brings the note back.</p>
+      {/if}
+      <button type="button" class="save" onclick={save}>＋ Save to library</button>
+    </div>
   {:else}
     <div class="header">
       <span class="paper-title" title={paper.title}>{paper.title}</span>
@@ -146,5 +201,33 @@
     color: var(--text-dim);
     font-style: italic;
     font-size: 0.82rem;
+  }
+
+  .unsaved {
+    margin: auto;
+    text-align: center;
+    max-width: 85%;
+    color: var(--text-dim);
+    font-size: 0.8rem;
+    line-height: 1.5;
+  }
+
+  .unsaved p {
+    margin: 0 0 0.6rem;
+  }
+
+  .hint {
+    color: var(--accent);
+  }
+
+  .save {
+    background: var(--accent);
+    border: none;
+    border-radius: 6px;
+    color: #0e1018;
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 0.3rem 0.7rem;
+    cursor: pointer;
   }
 </style>
