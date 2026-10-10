@@ -1,5 +1,6 @@
 /** Searching and ordering the library list. Pure, so the UI stays declarative. */
 import type { Paper } from "../sources/types";
+import type { LibraryEntry, PaperStatus } from "./model";
 
 export type LibrarySort = "added" | "title" | "year" | "citations";
 
@@ -10,8 +11,8 @@ export const SORTS: { id: LibrarySort; label: string }[] = [
   { id: "citations", label: "Most cited" },
 ];
 
-function haystack(p: Paper): string {
-  return [p.title, p.authors.join(" "), p.venue, p.year, p.doi, p.arxivId, p.citekey, p.abstract, p.localFile?.name]
+function haystack(p: Paper, tags: readonly string[]): string {
+  return [p.title, p.authors.join(" "), p.venue, p.year, p.doi, p.arxivId, p.citekey, p.abstract, p.localFile?.name, ...tags]
     .filter((v) => v != null)
     .join(" ")
     .normalize("NFKD")
@@ -19,8 +20,8 @@ function haystack(p: Paper): string {
     .toLowerCase();
 }
 
-/** Every whitespace-separated term must appear somewhere (accent- and case-insensitive). */
-export function matchesQuery(paper: Paper, query: string): boolean {
+/** Every whitespace-separated term must appear somewhere, tags included (accent- and case-insensitive). */
+export function matchesQuery(paper: Paper, query: string, tags: readonly string[] = []): boolean {
   const terms = query
     .normalize("NFKD")
     .replace(/[\u0300-\u036F]/g, "")
@@ -28,8 +29,24 @@ export function matchesQuery(paper: Paper, query: string): boolean {
     .split(/\s+/)
     .filter(Boolean);
   if (terms.length === 0) return true;
-  const text = haystack(paper);
+  const text = haystack(paper, tags);
   return terms.every((t) => text.includes(t));
+}
+
+/** "all" shows everything, "none" the papers that are not queued, otherwise one reading status. */
+export type StatusFilter = "all" | "none" | PaperStatus;
+
+export interface EntryFilter {
+  query: string;
+  status: StatusFilter;
+  /** Only papers carrying this tag, or null for any. */
+  tag: string | null;
+}
+
+export function matchesEntry(entry: LibraryEntry, filter: EntryFilter): boolean {
+  if (filter.status === "none" ? entry.status !== undefined : filter.status !== "all" && entry.status !== filter.status) return false;
+  if (filter.tag !== null && !entry.tags?.includes(filter.tag)) return false;
+  return matchesQuery(entry.paper, filter.query, entry.tags);
 }
 
 export interface Row {

@@ -3,9 +3,12 @@
   import { pickFiles } from "$lib/core/files";
   import { attachPdfToEntry, importFiles } from "$lib/core/importer";
   import { library } from "$lib/core/library.svelte";
+  import { toast } from "$lib/core/toast.svelte";
   import type { ModuleInstance } from "$lib/core/types";
   import { workspace } from "$lib/core/workspace.svelte";
-  import { SORTS, matchesQuery, sortRows, type LibrarySort } from "$lib/library/query";
+  import { MAX_TAGS, STATUSES, isStatus } from "$lib/library/model";
+  import { STATUS_LABEL } from "$lib/library/queue";
+  import { SORTS, matchesEntry, sortRows, type LibrarySort, type StatusFilter } from "$lib/library/query";
   import type { Paper } from "$lib/sources/types";
 
   let { instance }: { instance: ModuleInstance } = $props();
@@ -17,19 +20,31 @@
   const initial = instance.settings;
   let filter = $state("");
   let sort = $state<LibrarySort>(SORTS.some((s) => s.id === initial.sort) ? (initial.sort as LibrarySort) : "added");
+  let statusFilter = $state<StatusFilter>("all");
+  let tagFilter = $state<string | null>(null);
   let limit = $state(PAGE);
   let selectedId = $state<string | null>(null);
   let confirmId = $state<string | null>(null);
 
   void library.ensureLoaded();
 
-  const rows = $derived(sortRows(library.entries.filter((e) => matchesQuery(e.paper, filter)), sort));
+  const tagList = $derived(library.tags());
+  const rows = $derived(
+    sortRows(library.entries.filter((e) => matchesEntry(e, { query: filter, status: statusFilter, tag: tagFilter })), sort),
+  );
   const visible = $derived(rows.slice(0, limit));
 
   $effect(() => {
     void filter;
     void sort;
+    void statusFilter;
+    void tagFilter;
     limit = PAGE;
+  });
+
+  // Removing the last paper's tag must not leave the list filtered by a tag that no longer exists.
+  $effect(() => {
+    if (tagFilter !== null && !tagList.some((t) => t.tag === tagFilter)) tagFilter = null;
   });
 
   function select(paper: Paper): void {
@@ -45,6 +60,24 @@
   async function attach(paper: Paper): Promise<void> {
     const [file] = await pickFiles(".pdf,application/pdf");
     if (file) await attachPdfToEntry(paper.id, file);
+  }
+
+  function setStatus(id: string, value: string): void {
+    library.setStatus(id, isStatus(value) ? value : null);
+  }
+
+  /** Adds each comma-separated tag in the box; tells the user if a paper has reached its limit. */
+  function addTags(id: string, input: HTMLInputElement): void {
+    const results = input.value.split(/[,;]/).map((raw) => library.addTag(id, raw));
+    input.value = "";
+    if (results.includes("full")) toast(`A paper can have at most ${MAX_TAGS} tags.`, "info");
+  }
+
+  function tagKey(e: KeyboardEvent, id: string): void {
+    if (e.key === "Enter" || e.key === ",") {
+      e.preventDefault();
+      addTags(id, e.currentTarget as HTMLInputElement);
+    }
   }
 
   async function remove(id: string): Promise<void> {
@@ -78,6 +111,21 @@
     </select>
     <button type="button" class="import" onclick={() => void importPicked()}>Import…</button>
   </div>
+  {#if library.entries.length > 0}
+    <div class="bar filters">
+      <select bind:value={statusFilter} aria-label="Filter by reading status">
+        <option value="all">Any status</option>
+        <option value="none">Not queued</option>
+        {#each STATUSES as st (st)}<option value={st}>{STATUS_LABEL[st]}</option>{/each}
+      </select>
+      {#if tagList.length > 0}
+        <select bind:value={tagFilter} aria-label="Filter by tag">
+          <option value={null}>Any tag</option>
+          {#each tagList as { tag, count } (tag)}<option value={tag}>{tag} ({count})</option>{/each}
+        </select>
+      {/if}
+    </div>
+  {/if}
 
   {#if !library.loaded}
     <p class="empty">Loading…</p>
@@ -93,7 +141,8 @@
         : `${rows.length.toLocaleString()} of ${library.entries.length.toLocaleString()}`}
     </p>
     <ul>
-      {#each visible as { paper } (paper.id)}
+      {#each visible as entry (entry.paper.id)}
+        {@const paper = entry.paper}
         <li class:selected={selectedId === paper.id}>
           <button type="button" class="row" onclick={() => select(paper)}>
             <span class="title">{paper.title}</span>
@@ -108,6 +157,7 @@
               {:else if paper.localFile?.kind === "markdown"}<span class="badge file">Markdown</span>
               {:else if paper.pdfUrl}<span class="badge online">PDF online</span>{/if}
               {#if paper.citekey}<span class="badge cite">{paper.citekey}</span>{/if}
+              {#if entry.note}<span class="badge note" title="Has a note">note</span>{/if}
             </span>
           </button>
           <span class="actions">
@@ -121,6 +171,29 @@
               <button type="button" title="Remove from library" aria-label="Remove {paper.title}" onclick={() => (confirmId = paper.id)}>✕</button>
             {/if}
           </span>
+          <div class="organize">
+            <select
+              class="status"
+              value={entry.status ?? ""}
+              onchange={(e) => setStatus(paper.id, e.currentTarget.value)}
+              aria-label="Reading status of {paper.title}"
+            >
+              <option value="">Not queued</option>
+              {#each STATUSES as st (st)}<option value={st}>{STATUS_LABEL[st]}</option>{/each}
+            </select>
+            {#each entry.tags ?? [] as tag (tag)}
+              <span class="tag">
+                {tag}<button type="button" aria-label="Remove tag {tag} from {paper.title}" onclick={() => library.removeTag(paper.id, tag)}>×</button>
+              </span>
+            {/each}
+            <input
+              class="tag-input"
+              placeholder="＋ tag"
+              aria-label="Add a tag to {paper.title}"
+              onkeydown={(e) => tagKey(e, paper.id)}
+              onblur={(e) => e.currentTarget.value.trim() && addTags(paper.id, e.currentTarget)}
+            />
+          </div>
         </li>
       {/each}
     </ul>
@@ -129,7 +202,7 @@
         Show {Math.min(PAGE, rows.length - visible.length)} more
       </button>
     {:else if rows.length === 0}
-      <p class="empty">Nothing matches “{filter}”.</p>
+      <p class="empty">{filter.trim() ? `Nothing matches “${filter}”.` : "Nothing matches these filters."}</p>
     {/if}
   {/if}
 </div>
@@ -228,6 +301,7 @@
   li {
     position: relative;
     display: flex;
+    flex-wrap: wrap;
     background: var(--surface-2);
     border: 1px solid var(--border);
     border-radius: 8px;
@@ -295,6 +369,61 @@
   .badge.cite {
     text-transform: none;
     letter-spacing: 0;
+  }
+
+  .badge.note {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  }
+
+  .organize {
+    flex-basis: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0 0.6rem 0.45rem;
+  }
+
+  .organize .status {
+    padding: 0.1rem 0.3rem;
+    font-size: 0.68rem;
+    border-radius: 6px;
+  }
+
+  .tag {
+    display: inline-flex;
+    align-items: center;
+    font-size: 0.68rem;
+    color: var(--text);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    border-radius: 10px;
+    padding: 0.05rem 0.15rem 0.05rem 0.5rem;
+  }
+
+  .tag button {
+    border: none;
+    background: none;
+    color: var(--text-dim);
+    padding: 0 0.3rem;
+    font-size: 0.8rem;
+    line-height: 1;
+  }
+
+  .tag button:hover {
+    color: var(--danger);
+  }
+
+  .tag-input {
+    width: 4.5rem;
+    padding: 0.1rem 0.4rem;
+    font-size: 0.68rem;
+    border-radius: 10px;
+    transition: width 0.15s;
+  }
+
+  .tag-input:focus {
+    width: 9rem;
   }
 
   .actions {
