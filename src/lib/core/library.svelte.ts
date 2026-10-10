@@ -310,7 +310,13 @@ export class LibraryState {
     this.writing = true;
     const write = (): void => {
       this.dirty = false;
-      saveJson(FILE, KEY, serializeLibrary(this.data(), this.extra))
+      let saving: Promise<void>;
+      try {
+        saving = saveJson(FILE, KEY, serializeLibrary(this.data(), this.extra));
+      } catch (err) {
+        saving = Promise.reject(err); // a throw here must not leave `writing` set and stop all saving
+      }
+      saving
         .catch((err: unknown) => {
           console.error("Could not save the library", err);
         })

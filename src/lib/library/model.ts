@@ -226,10 +226,23 @@ function enrich(existing: Paper, incoming: Paper): Paper {
   return { ...merged, id: existing.id, source: existing.source, localFile: existing.localFile ?? incoming.localFile };
 }
 
+// An entry's paper is replaced, never edited in place, so its identity keys can be remembered per
+// object: every module that asks "is this paper saved?" re-asks on each library change.
+const entryKeys = new WeakMap<Paper, string[]>();
+
+function keysOfEntryPaper(paper: Paper): string[] {
+  let keys = entryKeys.get(paper);
+  if (!keys) {
+    keys = paperKeys(paper);
+    entryKeys.set(paper, keys);
+  }
+  return keys;
+}
+
 /** Index of the entry holding this paper under any of its identities (id, DOI, arXiv id, title), or -1. */
 export function findEntryIndex(entries: readonly LibraryEntry[], paper: Paper): number {
   const keys = new Set(paperKeys(paper));
-  return entries.findIndex((e) => e.paper.id === paper.id || paperKeys(e.paper).some((k) => keys.has(k)));
+  return entries.findIndex((e) => e.paper.id === paper.id || keysOfEntryPaper(e.paper).some((k) => keys.has(k)));
 }
 
 /** Moves a note waiting under `key` onto the entry at `at`. Mutates its arguments (callers hold copies). */

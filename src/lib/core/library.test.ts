@@ -11,16 +11,25 @@ vi.mock("./storage", () => ({
     if (value instanceof Error) throw value;
     return value ?? null;
   },
-  saveJson: async (file: string, key: string, value: unknown) => {
+  saveJson: (file: string, key: string, value: unknown): Promise<void> => {
     saves.started++;
-    if (saves.gate) await saves.gate;
-    if (saves.fail) throw new Error("disk full");
-    disk.set(`${file}:${key}`, structuredClone(value));
-    saves.finished++;
+    if (saves.throwSync) throw new Error("threw before returning a promise");
+    return (async () => {
+      if (saves.gate) await saves.gate;
+      if (saves.fail) throw new Error("disk full");
+      disk.set(`${file}:${key}`, structuredClone(value));
+      saves.finished++;
+    })();
   },
 }));
-/** Lets a test hold writes open, fail them, and count them. */
-const saves: { started: number; finished: number; gate: Promise<void> | null; fail: boolean } = { started: 0, finished: 0, gate: null, fail: false };
+/** Lets a test hold writes open, fail them (asynchronously or by throwing at once), and count them. */
+const saves: { started: number; finished: number; gate: Promise<void> | null; fail: boolean; throwSync: boolean } = {
+  started: 0,
+  finished: 0,
+  gate: null,
+  fail: false,
+  throwSync: false,
+};
 
 import { getBlob } from "./blobs";
 import { LibraryState } from "./library.svelte";
@@ -65,7 +74,7 @@ const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve,
 beforeEach(() => {
   disk.clear();
   oldStores.clear();
-  Object.assign(saves, { started: 0, finished: 0, gate: null, fail: false });
+  Object.assign(saves, { started: 0, finished: 0, gate: null, fail: false, throwSync: false });
 });
 
 describe("adding", () => {
@@ -617,6 +626,20 @@ describe("writing", () => {
     const file = disk.get("library.json:library") as { entries: { paper: { id: string }; note?: string; tags?: string[] }[] };
     expect(file.entries.map((e) => e.paper.id)).toEqual(["a", "b"]);
     expect(file.entries[0]).toMatchObject({ note: "n2", tags: ["t"] });
+  });
+
+  it("keeps writing after the storage layer throws instead of returning a promise", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const lib = await fresh();
+    saves.throwSync = true;
+    lib.add(paper({ id: "a" }));
+    await settle();
+    expect(error).toHaveBeenCalledWith("Could not save the library", expect.any(Error));
+    saves.throwSync = false;
+    lib.add(paper({ id: "b" }));
+    await settle();
+    expect((disk.get("library.json:library") as { entries: unknown[] }).entries).toHaveLength(2);
+    error.mockRestore();
   });
 
   it("keeps writing after a write fails", async () => {

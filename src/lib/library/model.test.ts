@@ -348,6 +348,22 @@ describe("addPapers", () => {
   });
 });
 
+describe("findEntryIndex and the identity keys it remembers", () => {
+  it("sees a new identity after a merge replaces the entry's paper", () => {
+    const before = [entry({ paper: paper({ id: "a", title: "short" }) })];
+    const probe = paper({ id: "zz", doi: "10.1000/arrives-later" });
+    expect(findEntryIndex(before, probe)).toBe(-1); // fills the cache for this entry
+    const merged = addPapers({ ...empty(), entries: before }, [paper({ id: "a", title: "short", doi: "10.1000/arrives-later" })], 1);
+    expect(merged.data.entries[0].paper.doi).toBe("10.1000/arrives-later");
+    expect(findEntryIndex(merged.data.entries, probe)).toBe(0);
+  });
+
+  it("still finds the same entry on repeated asks", () => {
+    const entries = [entry({ paper: paper({ id: "a", doi: "10.1000/x" }) })];
+    for (let i = 0; i < 3; i++) expect(findEntryIndex(entries, paper({ id: "zz", doi: "10.1000/x" }))).toBe(0);
+  });
+});
+
 describe("findEntryIndex", () => {
   it("finds a paper by id or by any shared identity, else -1", () => {
     const entries = [entry({ paper: paper({ id: "a", doi: "10.1000/x" }) }), entry({ paper: paper({ id: "b", arxivId: "1706.03762" }) })];
