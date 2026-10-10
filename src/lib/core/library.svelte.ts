@@ -5,7 +5,7 @@
  * the same file twice never stores it twice.
  */
 import { fileId } from "../library/files";
-import { migrateAnnotations, migrateQueue } from "../library/migrate";
+import { migrateAnnotations, migrateQueue, unusableNotes, unusableQueueItems } from "../library/migrate";
 import {
   addPapers,
   adoptOrphan,
@@ -24,7 +24,6 @@ import {
   type PaperStatus,
   type TagResult,
 } from "../library/model";
-import { queueColumns } from "../library/queue";
 import type { LocalFileRef, Paper } from "../sources/types";
 import { deleteBlob, getBlob, putBlob } from "./blobs";
 import { loadJson, loadLegacy, saveJson } from "./storage";
@@ -54,6 +53,8 @@ export class LibraryState {
   private loading: Promise<void> | null = null;
   private writing = false;
   private dirty = false;
+  /** The original library file, held until a copy of it has been stored (see keepBackup). */
+  private pendingBackup: { raw: unknown } | null = null;
   /** Failed writes in a row, and the pending retry. */
   private failures = 0;
   private retry: ReturnType<typeof setTimeout> | null = null;
@@ -66,7 +67,7 @@ export class LibraryState {
   private async load(): Promise<void> {
     const raw = await loadJson<unknown>(FILE, KEY);
     const parsed = parseLibraryFile(raw);
-    if (parsed.repaired > 0) this.keepBackup(raw, parsed.repaired);
+    if (parsed.repaired > 0) await this.keepBackup(raw, parsed.repaired);
     this.extra = parsed.extra;
     const stored: LibraryData = { entries: parsed.entries, orphans: parsed.orphans, migrated: parsed.migrated };
     const data = await this.migrateOldStores(stored);
@@ -84,24 +85,42 @@ export class LibraryState {
    */
   private async migrateOldStores(data: LibraryData): Promise<LibraryData> {
     let next = data;
-    if (!next.migrated.annotations) next = migrateAnnotations(next, await readOldStore("annotations.json", "annotations"));
-    if (!next.migrated.queue) next = migrateQueue(next, await readOldStore("queue.json", "queue"), Date.now());
+    let unusable = 0;
+    if (!next.migrated.annotations) {
+      const notes = await readOldStore("annotations.json", "annotations");
+      next = migrateAnnotations(next, notes);
+      unusable += unusableNotes(notes);
+    }
+    if (!next.migrated.queue) {
+      const queue = await readOldStore("queue.json", "queue");
+      next = migrateQueue(next, queue, Date.now());
+      unusable += unusableQueueItems(queue);
+    }
+    if (unusable > 0) {
+      toast(
+        `${unusable} ${unusable === 1 ? "item" : "items"} from your old reading queue or annotations could not be imported. The old files were left as they were.`,
+        "info",
+      );
+    }
     return next;
   }
 
   /**
-   * The file held entries this build could not read as they were (damaged, from a newer build, or
-   * sharing a paper id). The next write replaces the file with the repaired library, so the
-   * original is kept first, as the layouts file does.
+   * The file held something this build could not read as it was (damaged, from a newer version, or
+   * sharing a paper id). The next write replaces it with the repaired library, so the original is
+   * copied aside first, as the layouts file does. If the copy cannot be made, the original is held
+   * back from being overwritten: every write first tries the copy again.
    */
-  private keepBackup(raw: unknown, repaired: number): void {
-    saveJson(FILE, `${KEY}.backup`, raw).catch((err: unknown) => {
+  private async keepBackup(raw: unknown, repaired: number): Promise<void> {
+    const what = `Some of your library file could not be read as it was (${repaired} ${repaired === 1 ? "item" : "items"}).`;
+    try {
+      await saveJson(FILE, `${KEY}.backup`, raw);
+      toast(`${what} A copy of the original was kept.`, "info");
+    } catch (err) {
       console.error("Could not back up the library file before repairing it", err);
-    });
-    toast(
-      `${repaired} ${repaired === 1 ? "entry" : "entries"} in your library file could not be read as they were (damaged, or listed twice). A copy of the original was kept.`,
-      "info",
-    );
+      this.pendingBackup = { raw };
+      toast(`${what} A copy of the original could not be saved, so your library will not be saved until it can be.`, "error");
+    }
   }
 
   private data(): LibraryData {
@@ -174,11 +193,6 @@ export class LibraryState {
 
   noteOf(id: string): string {
     return this.entries.find((e) => e.paper.id === id)?.note ?? "";
-  }
-
-  /** Entries in one queue column, most recently moved first. */
-  byStatus(status: PaperStatus): LibraryEntry[] {
-    return queueColumns(this.entries)[status];
   }
 
   /** Every tag in use with how many papers carry it, most used first. */
@@ -351,13 +365,17 @@ export class LibraryState {
       if (this.retry) clearTimeout(this.retry);
       this.retry = null;
       this.dirty = false;
-      let saving: Promise<void>;
-      try {
-        saving = saveJson(FILE, KEY, serializeLibrary(this.data(), this.extra));
-      } catch (err) {
-        saving = Promise.reject(err); // a throw here must not leave `writing` set and stop all saving
-      }
-      saving
+      // An async function: a storage layer that throws instead of returning a promise is a failed
+      // write too, and must not leave `writing` set and stop all saving.
+      const attempt = async (): Promise<void> => {
+        if (this.pendingBackup) {
+          await saveJson(FILE, `${KEY}.backup`, this.pendingBackup.raw);
+          this.pendingBackup = null;
+          toast("A copy of your original library file was kept.", "info");
+        }
+        await saveJson(FILE, KEY, serializeLibrary(this.data(), this.extra));
+      };
+      attempt()
         .then(
           () => {
             this.failures = 0;

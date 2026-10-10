@@ -20,6 +20,21 @@ import {
   type PaperStatus,
 } from "./model";
 
+function isQueueItem(item: unknown): boolean {
+  return typeof item === "object" && item !== null && isPaperLike((item as { paper?: unknown }).paper);
+}
+
+/** How many items of the old queue the import cannot use (so the user can be told; the file is left as it is). */
+export function unusableQueueItems(raw: unknown): number {
+  return Array.isArray(raw) ? raw.filter((item) => !isQueueItem(item)).length : 0;
+}
+
+/** How many entries of the old annotations store are not text (blank text is not a note, so it is not counted). */
+export function unusableNotes(raw: unknown): number {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return 0;
+  return Object.values(raw).filter((text) => typeof text !== "string" && text !== null && text !== undefined).length;
+}
+
 interface QueuedPaper {
   paper: Paper;
   status: PaperStatus;
@@ -29,9 +44,8 @@ interface QueuedPaper {
 function parseQueue(raw: unknown[], now: number): QueuedPaper[] {
   const queued: QueuedPaper[] = [];
   for (const item of raw) {
-    if (typeof item !== "object" || item === null) continue;
-    const { paper, status, addedAt } = item as { paper?: unknown; status?: unknown; addedAt?: unknown };
-    if (!isPaperLike(paper)) continue;
+    if (!isQueueItem(item)) continue;
+    const { paper, status, addedAt } = item as { paper: Paper; status?: unknown; addedAt?: unknown };
     const parsed = typeof addedAt === "string" ? Date.parse(addedAt) : typeof addedAt === "number" ? addedAt : NaN;
     queued.push({ paper, status: isStatus(status) ? status : "to-read", at: Number.isFinite(parsed) ? parsed : now });
   }

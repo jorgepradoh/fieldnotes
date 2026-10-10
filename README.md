@@ -200,11 +200,16 @@ everywhere. Papers are recognised as the same by DOI, arXiv id or title.
   Read). `library.json` becomes version 2 on that launch; an
   older build can still read it but will not know about status, tags and notes
   and would drop them if it saved the library.
-- If `library.json` contains entries the app cannot read as they are (damaged,
-  or written by a newer version) or lists one paper twice, you are told how
-  many, and **a copy of the original file is kept** (under the key
+- If `library.json` holds something the app cannot read exactly as it is —
+  damaged entries, a status, tag or note it does not understand, a file written
+  by a newer version, or a paper listed twice — you are told how many items are
+  affected, and **a copy of the original file is kept** (under the key
   `library.backup` in the same store file) before the repaired library is ever
-  written over it.
+  written over it. If that copy cannot be made, the library is not saved at all
+  until it can be, so the original is never overwritten without a copy.
+- Anything in the old queue or annotations stores that could not be imported
+  (an item that is not a paper, a note that is not text) is counted and
+  reported; the old files stay as they were.
 - If saving the library fails (disk full, a locked file) you are told once and
   the app retries by itself, after 5 seconds and then at growing intervals up
   to a minute, until it works.
@@ -329,7 +334,7 @@ docs/                ideas, plans and design notes
 
 ### Tests
 
-`npm test` runs ~690 unit tests: parsers (BibTeX, arXiv Atom, SSE), merge and
+`npm test` runs ~720 unit tests: parsers (BibTeX, arXiv Atom, SSE), merge and
 ranking logic, layout validation and migration, the library record (formats,
 migrations from the old queue and annotations, tags, write failures), both LLM
 providers against mocked streams, the library exporters and the Zotero adapter,

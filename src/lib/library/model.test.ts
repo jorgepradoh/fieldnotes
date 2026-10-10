@@ -9,6 +9,7 @@ import {
   normalizeTag,
   normalizeTags,
   parseEntry,
+  parseEntryChecked,
   parseLibraryFile,
   removeEntry,
   serializeLibrary,
@@ -144,6 +145,51 @@ describe("parseEntry", () => {
   );
 });
 
+describe("parseEntryChecked: what counts as losing something", () => {
+  const p = paper({ id: "a" });
+  const lossy = (extra: Record<string, unknown>) => parseEntryChecked({ paper: p, addedAt: 1, ...extra }).lossy;
+
+  it("is not lossy for a clean entry, unknown fields, or differences that lose nothing", () => {
+    expect(lossy({})).toBe(false);
+    expect(lossy({ futureField: { x: 1 } })).toBe(false);
+    expect(lossy({ status: "reading", statusAt: 4, tags: ["nlp"], note: "text" })).toBe(false);
+    expect(lossy({ tags: ["NLP", " #nlp ", "nlp", "Deep  Learning"] })).toBe(false); // case, spacing, '#', duplicates
+    expect(lossy({ tags: [] })).toBe(false);
+    expect(lossy({ tags: ["ok", "   "] })).toBe(false); // a blank tag was nothing
+    expect(lossy({ note: "" })).toBe(false);
+    expect(lossy({ note: "  \n " })).toBe(false);
+  });
+
+  it("is lossy for a status this build does not know", () => {
+    expect(lossy({ status: "archived", statusAt: 3 })).toBe(true);
+    expect(parseEntryChecked({ paper: p, addedAt: 1, status: "archived" }).entry).not.toHaveProperty("status");
+  });
+
+  it("is lossy for a status time that is not a number", () => {
+    expect(lossy({ status: "done", statusAt: "yesterday" })).toBe(true);
+    expect(lossy({ status: "done", statusAt: Infinity })).toBe(true);
+  });
+
+  it("is lossy for tags that are not a list of strings, are cut short, or do not all fit", () => {
+    expect(lossy({ tags: "nlp" })).toBe(true);
+    expect(lossy({ tags: ["a", 5] })).toBe(true);
+    expect(lossy({ tags: ["a", { name: "b" }] })).toBe(true);
+    expect(lossy({ tags: ["x".repeat(MAX_TAG_LENGTH + 1)] })).toBe(true);
+    expect(lossy({ tags: Array.from({ length: MAX_TAGS + 1 }, (_, i) => `t${i}`) })).toBe(true);
+    expect(lossy({ tags: Array.from({ length: MAX_TAGS }, (_, i) => `t${i}`) })).toBe(false);
+    expect(lossy({ tags: ["x".repeat(MAX_TAG_LENGTH)] })).toBe(false);
+  });
+
+  it("is lossy for a note that is not text", () => {
+    expect(lossy({ note: { text: "rich" } })).toBe(true);
+    expect(lossy({ note: 42 })).toBe(true);
+  });
+
+  it("is not lossy-but-usable for an entry that cannot be used at all: that is null", () => {
+    expect(parseEntryChecked({ addedAt: "1" })).toEqual({ entry: null, lossy: false });
+  });
+});
+
 describe("parseLibraryFile", () => {
   it("reads the first desktop build's bare list of { paper, savedAt }", () => {
     const parsed = parseLibraryFile([
@@ -188,6 +234,53 @@ describe("parseLibraryFile", () => {
       const parsed = parseLibraryFile({ version: 2, entries: [{ paper: paper({ id: "ok" }), addedAt: 1 }, { paper: paper({ id: "newer" }), addedAt: "2026-10-01T00:00:00Z" }, "junk", null] });
       expect(parsed.entries.map((e) => e.paper.id)).toEqual(["ok"]);
       expect(parsed.repaired).toBe(3);
+    });
+
+    it("counts an entry that was readable only by dropping or cutting a field", () => {
+      const parsed = parseLibraryFile({ version: 2, entries: [
+        { paper: paper({ id: "a" }), addedAt: 1, status: "archived", note: "kept" },
+        { paper: paper({ id: "b" }), addedAt: 2, tags: Array.from({ length: 40 }, (_, i) => `t${i}`) },
+        { paper: paper({ id: "c" }), addedAt: 3, note: { text: "rich" } },
+        { paper: paper({ id: "d" }), addedAt: 4, tags: ["NLP"] }, // nothing lost
+      ] });
+      expect(parsed.entries.map((e) => e.paper.id)).toEqual(["a", "b", "c", "d"]);
+      expect(parsed.repaired).toBe(3);
+    });
+
+    it.each([
+      ["a string", "garbage"],
+      ["a number", 7],
+      ["an empty object", {}],
+      ["entries that is not a list", { version: 2, entries: { a: 1 } }],
+      ["a shape from a newer build", { version: 3, items: [{ paper: paper({ id: "x" }), addedAt: 1 }] }],
+    ])("counts a file whose shape it does not know (%s), since the next write would replace it", (_name, raw) => {
+      const parsed = parseLibraryFile(raw);
+      expect(parsed.entries).toEqual([]);
+      expect(parsed.repaired).toBe(1);
+    });
+
+    it("counts a file written by a newer version even when its entries are readable", () => {
+      const parsed = parseLibraryFile({ version: 3, entries: [{ paper: paper({ id: "a" }), addedAt: 1 }] });
+      expect(parsed.entries).toHaveLength(1);
+      expect(parsed.repaired).toBe(1);
+    });
+
+    it("keeps the file a stored file of an entry it folds a duplicate into", () => {
+      const file = { id: "blob1", name: "x.pdf", kind: "pdf" as const, size: 3 };
+      const parsed = parseLibraryFile({ version: 2, entries: [
+        { paper: paper({ id: "d" }), addedAt: 1 },
+        { paper: paper({ id: "d", localFile: file }), addedAt: 2 },
+      ] });
+      expect(parsed.entries).toHaveLength(1);
+      expect(parsed.entries[0].paper.localFile).toEqual(file);
+    });
+
+    it("does not replace the first entry's own file with a duplicate's", () => {
+      const parsed = parseLibraryFile({ version: 2, entries: [
+        { paper: paper({ id: "d", localFile: { id: "first", name: "1.pdf", kind: "pdf", size: 1 } }), addedAt: 1 },
+        { paper: paper({ id: "d", localFile: { id: "second", name: "2.pdf", kind: "pdf", size: 2 } }), addedAt: 2 },
+      ] });
+      expect(parsed.entries[0].paper.localFile?.id).toBe("first");
     });
 
     it("reports nothing for a clean file, a v1 file or an empty one", () => {

@@ -14,6 +14,7 @@ vi.mock("./storage", () => ({
   saveJson: (file: string, key: string, value: unknown): Promise<void> => {
     saves.started++;
     if (saves.throwSync) throw new Error("threw before returning a promise");
+    if (saves.failBackup && key.endsWith(".backup")) return Promise.reject(new Error("backup store failed"));
     return (async () => {
       if (saves.gate) await saves.gate;
       if (saves.fail) throw new Error("disk full");
@@ -26,16 +27,18 @@ const toastSpy = vi.hoisted(() => vi.fn());
 vi.mock("./toast.svelte", () => ({ toast: toastSpy }));
 
 /** Lets a test hold writes open, fail them (asynchronously or by throwing at once), and count them. */
-const saves: { started: number; finished: number; gate: Promise<void> | null; fail: boolean; throwSync: boolean } = {
+const saves: { started: number; finished: number; gate: Promise<void> | null; fail: boolean; throwSync: boolean; failBackup: boolean } = {
   started: 0,
   finished: 0,
   gate: null,
   fail: false,
   throwSync: false,
+  failBackup: false,
 };
 
 import { getBlob } from "./blobs";
 import { LibraryState } from "./library.svelte";
+import { queueColumns } from "../library/queue";
 import type { Paper } from "../sources/types";
 
 function paper(over: Partial<Paper> & { id: string }): Paper {
@@ -75,9 +78,10 @@ async function fresh(): Promise<LibraryState> {
 const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
+  toastSpy.mockClear();
   disk.clear();
   oldStores.clear();
-  Object.assign(saves, { started: 0, finished: 0, gate: null, fail: false, throwSync: false });
+  Object.assign(saves, { started: 0, finished: 0, gate: null, fail: false, throwSync: false, failBackup: false });
 });
 
 describe("adding", () => {
@@ -359,8 +363,8 @@ describe("status, notes and tags", () => {
     expect(lib.setStatus("a", "reading", 100)).toBe(true);
     expect(lib.setStatus("b", "reading", 200)).toBe(true);
     expect(lib.statusOf("a")).toBe("reading");
-    expect(lib.byStatus("reading").map((e) => e.paper.id)).toEqual(["b", "a"]);
-    expect(lib.byStatus("done")).toEqual([]);
+    expect(queueColumns(lib.entries)["reading"].map((e) => e.paper.id)).toEqual(["b", "a"]);
+    expect(queueColumns(lib.entries)["done"]).toEqual([]);
     expect(lib.setStatus("a", null)).toBe(true);
     expect(lib.statusOf("a")).toBeUndefined();
     expect(lib.papers.map((p) => p.id)).toEqual(["a", "b"]); // clearing the status never removes the paper
@@ -442,9 +446,10 @@ describe("status, notes and tags", () => {
     lib.addTag("a", "gone");
     lib.setNote("a", "a long note I wrote");
     await lib.remove("a");
-    expect(lib.byStatus("done")).toEqual([]);
+    expect(queueColumns(lib.entries)["done"]).toEqual([]);
     expect(lib.tags()).toEqual([]);
     expect(lib.orphans.get("a")).toBe("a long note I wrote");
+    await settle(); // the follow-up write that carries the removal
     expect((disk.get("library.json:library") as { orphanNotes: Record<string, string> }).orphanNotes).toEqual({ a: "a long note I wrote" });
 
     lib.add(paper({ id: "a" }));
@@ -573,6 +578,22 @@ describe("importing the old queue and annotations", () => {
     expect(error).toHaveBeenCalled();
     expect(stored().migrated).toEqual({ annotations: true }); // not queue: it is retried
     error.mockRestore();
+  });
+
+  it("tells the user how many old items could not be imported, and still imports the rest", async () => {
+    oldStores.set("queue.json:queue", [...OLD_QUEUE, null, { paper: { id: 5 } }, "junk"]);
+    oldStores.set("annotations.json:annotations", { ...OLD_NOTES, broken: { not: "text" } });
+    const lib = await fresh();
+    expect(lib.entries.map((e) => e.paper.id)).toEqual(["s2:q1", "s2:q2"]);
+    expect(toastSpy).toHaveBeenCalledTimes(1);
+    expect(toastSpy).toHaveBeenCalledWith(expect.stringContaining("4 items from your old reading queue or annotations could not be imported"), "info");
+  });
+
+  it("says nothing when everything in the old stores could be imported", async () => {
+    oldStores.set("queue.json:queue", OLD_QUEUE);
+    oldStores.set("annotations.json:annotations", OLD_NOTES);
+    await fresh();
+    expect(toastSpy).not.toHaveBeenCalled();
   });
 
   it("ignores an old store that is not the shape it expects, without flagging it", async () => {
@@ -817,13 +838,14 @@ describe("a library file that has to be repaired", () => {
     await settle();
     expect(JSON.stringify(disk.get("library.json:library"))).not.toContain("from-a-newer-build");
     expect(backup()).toEqual(original); // …and the copy still has the entry that was dropped
-    expect(toastSpy).toHaveBeenCalledWith(expect.stringContaining("1 entry in your library file could not be read"), "info");
+    expect(toastSpy).toHaveBeenCalledWith(expect.stringContaining("(1 item)"), "info");
+    expect(toastSpy).toHaveBeenCalledWith(expect.stringContaining("A copy of the original was kept"), "info");
   });
 
-  it("says how many entries, in the plural too", async () => {
+  it("says how many items, in the plural too", async () => {
     disk.set("library.json:library", { version: 2, entries: [{ paper: paper({ id: "ok" }), addedAt: 1 }, "junk", null, { addedAt: 3 }] });
     await fresh();
-    expect(toastSpy).toHaveBeenCalledWith(expect.stringContaining("3 entries in your library file could not be read"), "info");
+    expect(toastSpy).toHaveBeenCalledWith(expect.stringContaining("(3 items)"), "info");
   });
 
   it("folds entries that share a paper id into one, keeping what each held, and backs the file up", async () => {
@@ -856,15 +878,108 @@ describe("a library file that has to be repaired", () => {
     }
   });
 
-  it("still loads when the backup cannot be written, and says so in the log", async () => {
-    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    disk.set("library.json:library", { version: 2, entries: [{ paper: paper({ id: "ok" }), addedAt: 1 }, "junk"] });
-    saves.fail = true;
-    const lib = await fresh();
+  describe("when the copy of the original cannot be made", () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      toastSpy.mockClear();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+    const original = () => ({ version: 2, entries: [{ paper: paper({ id: "ok" }), addedAt: 1 }, { paper: paper({ id: "newer" }), addedAt: "2026-10-01T00:00:00Z", note: "only copy" }] });
+
+    it("loads, says plainly that no copy exists, and does not claim one was kept", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      disk.set("library.json:library", original());
+      saves.failBackup = true;
+      const lib = await fresh();
+      expect(lib.papers.map((p) => p.id)).toEqual(["ok"]);
+      expect(error).toHaveBeenCalledWith("Could not back up the library file before repairing it", expect.any(Error));
+      expect(toastSpy).toHaveBeenCalledTimes(1);
+      expect(toastSpy.mock.calls[0][0]).toContain("could not be saved");
+      expect(toastSpy.mock.calls[0][0]).not.toContain("was kept");
+      error.mockRestore();
+    });
+
+    it("never writes the repaired library over the original until a copy exists", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      disk.set("library.json:library", original());
+      saves.failBackup = true;
+      const lib = await fresh();
+      lib.setNote("ok", "an edit");
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(JSON.stringify(disk.get("library.json:library"))).toContain("only copy"); // the original is intact
+      expect(disk.has("library.json:library.backup")).toBe(false);
+      error.mockRestore();
+    });
+
+    it("makes the copy first, then saves, as soon as the store works again", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const before = original();
+      disk.set("library.json:library", structuredClone(before));
+      saves.failBackup = true;
+      const lib = await fresh();
+      lib.setNote("ok", "an edit");
+      await vi.advanceTimersByTimeAsync(0);
+      saves.failBackup = false; // the next retry can make the copy
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(disk.get("library.json:library.backup")).toEqual(before);
+      expect(JSON.stringify(disk.get("library.json:library"))).not.toContain("only copy");
+      expect((disk.get("library.json:library") as { entries: { note?: string }[] }).entries[0].note).toBe("an edit");
+      expect(toastSpy).toHaveBeenCalledWith("A copy of your original library file was kept.", "info");
+      error.mockRestore();
+    });
+
+    it("does not hold back saving when there was nothing to repair", async () => {
+      disk.set("library.json:library", { version: 2, entries: [{ paper: paper({ id: "ok" }), addedAt: 1 }] });
+      saves.failBackup = true; // would matter only if a backup were attempted
+      const lib = await fresh();
+      lib.setNote("ok", "fine");
+      await vi.advanceTimersByTimeAsync(0);
+      expect((disk.get("library.json:library") as { entries: { note?: string }[] }).entries[0].note).toBe("fine");
+    });
+  });
+
+  it.each([
+    ["a status from a newer build", { version: 2, entries: [{ paper: paper({ id: "ok" }), addedAt: 1, status: "archived", statusAt: 3 }] }],
+    ["more tags than fit", { version: 2, entries: [{ paper: paper({ id: "ok" }), addedAt: 1, tags: Array.from({ length: 40 }, (_, i) => `t${i}`) }] }],
+    ["a note that is not text", { version: 2, entries: [{ paper: paper({ id: "ok" }), addedAt: 1, note: { rich: true } }] }],
+    ["a shape this build does not know", { version: 3, items: [{ paper: paper({ id: "ok" }), addedAt: 1 }] }],
+    ["a file from a newer version", { version: 3, entries: [{ paper: paper({ id: "ok" }), addedAt: 1 }] }],
+    ["garbage", "garbage"],
+  ])("backs the file up before a read that loses something is written over it: %s", async (_name, raw) => {
+    disk.set("library.json:library", structuredClone(raw));
+    await fresh();
     await settle();
-    expect(lib.papers.map((p) => p.id)).toEqual(["ok"]);
-    expect(error).toHaveBeenCalledWith("Could not back up the library file before repairing it", expect.any(Error));
-    error.mockRestore();
+    expect(disk.get("library.json:library.backup")).toEqual(raw);
+    expect(toastSpy).toHaveBeenCalledWith(expect.stringContaining("A copy of the original was kept"), "info");
+  });
+
+  it("is not open for writing until the copy of the original has been stored", async () => {
+    const original = { version: 2, entries: [{ paper: paper({ id: "ok" }), addedAt: 1 }, "damaged"] };
+    disk.set("library.json:library", structuredClone(original));
+    let release!: () => void;
+    saves.gate = new Promise<void>((resolve) => (release = resolve)); // slow storage: the copy is still being written
+    const lib = new LibraryState();
+    const loading = lib.ensureLoaded();
+    await settle();
+    expect(lib.loaded).toBe(false);
+    expect(() => lib.setNote("ok", "too early")).toThrow(/still loading/);
+    expect(JSON.stringify(disk.get("library.json:library"))).toContain("damaged");
+    saves.gate = null;
+    release();
+    await loading;
+    expect(lib.loaded).toBe(true);
+    expect(disk.get("library.json:library.backup")).toEqual(original);
+  });
+
+  it("does not back up a file that only needed tidying (tag case, a blank note)", async () => {
+    disk.set("library.json:library", { version: 2, entries: [{ paper: paper({ id: "ok" }), addedAt: 1, tags: ["NLP", "nlp"], note: "  " }] });
+    await fresh();
+    await settle();
+    expect(disk.has("library.json:library.backup")).toBe(false);
+    expect(toastSpy).not.toHaveBeenCalled();
   });
 });
 

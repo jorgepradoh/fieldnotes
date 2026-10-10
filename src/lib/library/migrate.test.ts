@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Paper } from "../sources/types";
-import { migrateAnnotations, migrateQueue } from "./migrate";
+import { migrateAnnotations, migrateQueue, unusableNotes, unusableQueueItems } from "./migrate";
 import type { LibraryData, LibraryEntry } from "./model";
 
 function paper(over: Partial<Paper> & { id: string }): Paper {
@@ -229,5 +229,33 @@ describe("both, in the order the store runs them (annotations, then queue)", () 
     const out = migrateQueue(migrateAnnotations(empty(), { "s2:abc": "first note", "arxiv:123": "second note" }), queue, NOW);
     expect(out.entries).toHaveLength(1);
     expect(out.entries[0].note).toBe("first note\n\n---\n\nsecond note");
+  });
+});
+
+describe("unusableQueueItems", () => {
+  it("counts the items of the old queue the import cannot use", () => {
+    expect(unusableQueueItems([null, 7, "x", { paper: { id: 1 } }, { status: "reading" }, { paper: paper({ id: "ok" }), status: "reading" }])).toBe(5);
+  });
+
+  it("is 0 for a clean queue, an empty one, and anything that is not a list", () => {
+    expect(unusableQueueItems(queueFile)).toBe(0);
+    expect(unusableQueueItems([])).toBe(0);
+    for (const raw of [null, undefined, {}, "x", 5]) expect(unusableQueueItems(raw)).toBe(0);
+  });
+
+  it("agrees with what migrateQueue actually imports", () => {
+    const raw = [...queueFile, null, { paper: { id: 5 } }];
+    expect(migrateQueue(empty(), raw, NOW).entries).toHaveLength(raw.length - unusableQueueItems(raw));
+  });
+});
+
+describe("unusableNotes", () => {
+  it("counts entries of the old annotations store that are not text, but not blank text", () => {
+    expect(unusableNotes({ a: "text", b: "", c: "  ", d: { x: 1 }, e: 5, f: ["l"], g: null, h: undefined })).toBe(3);
+  });
+
+  it("is 0 for a clean store, and for anything that is not a map", () => {
+    expect(unusableNotes({ a: "x" })).toBe(0);
+    for (const raw of [null, undefined, [], ["a"], "x", 5]) expect(unusableNotes(raw)).toBe(0);
   });
 });

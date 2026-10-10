@@ -73,8 +73,9 @@ interface LibraryFile {
 ### API on `LibraryState`
 
 `idFor(paper)`, `ensure(paper)`, `setStatus(id, status | null)`, `setNote(id, text)`,
-`addTag(id, tag)` / `removeTag(id, tag)`, `byStatus(status)`, `tags()`, plus `noteOf(id)` and
-`hasOrphanNote(paper)` for the Annotations hint. All writes go through one `persist()`, which now
+`addTag(id, tag)` / `removeTag(id, tag)`, `tags()`, plus `noteOf(id)`, `statusOf(id)` and
+`hasOrphanNote(paper)` for the Annotations hint. (The master plan also lists `byStatus`; the Queue uses
+the pure `queueColumns` directly, so `byStatus` was dropped as unused.) All writes go through one `persist()`, which now
 coalesces: the first write happens immediately (so behaviour and tests are unchanged), writes requested
 while one is in flight collapse into a single follow-up write of the latest state. This matters because
 notes now live in the same file as the whole library and are saved as the user types. A failed write
@@ -184,6 +185,10 @@ is added next to `loadLegacyWorkspace`.
     plan only said an existing library status is kept).
 18. **Back up before repairing** the library file (unreadable or duplicated-id entries), mirroring what
     the layouts file does, rather than silently dropping them.
+20. **The original library file is never overwritten without a copy:** if the backup cannot be made, saving
+    is held back (and retried) rather than proceeding; the load waits for the copy.
+21. **"Repaired" includes lossy reads**, not just dropped entries: an unknown status, tags that do not fit
+    or are not strings, a note that is not text, an unrecognised file shape, a newer `version`.
 19. **Retries follow the backoff, not the edit rate:** while a write is failing, edits do not trigger
     attempts of their own; the scheduled retry writes the latest state.
 
@@ -244,3 +249,23 @@ mutation checks for each, and UI scenarios for the two that are user-visible.
 
 Observed, not part of this change: the dev build logs Svelte's `state_proxy_equality_mismatch` warning on
 the file-import path. It appears identically on the pre-change commit (`b5ee275`), so it is left alone.
+
+## Changes made after the third review
+
+Seven more findings, all reproduced first. Six changed code; one is a dead-code removal.
+
+1. The backup was fire-and-forget: if it failed the toast still said a copy was kept and the repaired
+   library overwrote the original → the load waits for the copy; on failure the user is told plainly and
+   saving is held back (retried with the usual backoff) until a copy exists.
+2. A file whose top-level shape is not recognised (or is a newer `version`) loaded as empty with nothing
+   reported → counted as a repair, so it is backed up first.
+3. Entries read by dropping or cutting a known field (status from a newer build, more than 30 tags, a
+   note that is not text) were not counted → `parseEntryChecked` reports lossy reads; harmless
+   tidying (tag case, blank notes) does not trigger a backup.
+4. Folding a duplicate-id entry dropped its `localFile`, stranding a blob → adopted when the first
+   entry has none (if both have different files the backup keeps the other reference).
+5. Old queue items the import could not use were skipped silently while the import was marked done →
+   counted and reported once; the old file is untouched.
+6. A second Annotations module showed a stale note and would overwrite it on its next save → the text
+   follows the stored note unless an edit of its own is waiting to be saved.
+7. `byStatus` was only used by tests → removed (see the API section).

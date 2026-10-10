@@ -14,6 +14,10 @@
   let preview = $state(false);
   let text = $state("");
 
+  // An edit waiting to be saved (see handleChange).
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  let pending: { id: string; text: string } | null = null;
+
   void library.ensureLoaded();
 
   // The note lives on the library entry, so a paper that arrives under another source's id
@@ -29,21 +33,21 @@
     }),
   );
 
-  // Load the note when the record changes. Reading the note itself is untracked: otherwise
-  // every save would reload the text and fight the cursor.
+  // Keep the text in step with the stored note: when the record changes, and when another
+  // Annotations module (or an import) changes it. Text still waiting to be saved is this module's own
+  // edit in progress and is left alone, so a save never reloads the text under the cursor.
   $effect(() => {
     const selected = paper;
     const id = recordId;
+    const stored = id ? library.noteOf(id) : "";
     untrack(() => {
       // A note written under this paper's own id before the library was the one record
       // is brought onto the record it matches.
       if (selected && id && library.hasOrphanNote(selected)) library.ensure(selected);
-      text = id ? library.noteOf(id) : "";
+      if (pending === null && text !== stored) text = stored;
     });
   });
 
-  let saveTimer: ReturnType<typeof setTimeout> | null = null;
-  let pending: { id: string; text: string } | null = null;
 
   function handleChange(t: string): void {
     text = t;

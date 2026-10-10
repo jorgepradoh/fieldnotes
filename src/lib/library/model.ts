@@ -72,14 +72,18 @@ export function isPaperLike(value: unknown): value is Paper {
  * control characters, at most MAX_TAG_LENGTH characters. Null when nothing is left.
  */
 export function normalizeTag(raw: string): string | null {
-  const cleaned = raw
+  const tag = Array.from(cleanTag(raw)).slice(0, MAX_TAG_LENGTH).join("").trim();
+  return tag === "" ? null : tag;
+}
+
+/** A tag as normalizeTag leaves it before the length cap. */
+function cleanTag(raw: string): string {
+  return raw
     .replace(/[\p{Cc},;]+/gu, " ")
     .replace(/\s+/g, " ")
     .replace(/^[#\s]+/, "")
     .trim()
     .toLowerCase();
-  const tag = Array.from(cleaned).slice(0, MAX_TAG_LENGTH).join("").trim();
-  return tag === "" ? null : tag;
 }
 
 /** Normalised, de-duplicated and capped; anything that is not a list of strings gives []. */
@@ -104,50 +108,87 @@ export function tagCounts(entries: readonly LibraryEntry[]): { tag: string; coun
 
 // ------------------------------------------------------------------ parsing
 
+/** More distinct tags than fit, or any tag cut short: normalising them would lose some. */
+function tagsLoseInformation(raw: unknown[]): boolean {
+  const kept = new Set<string>();
+  for (const item of raw) {
+    if (typeof item !== "string") return true;
+    const tag = normalizeTag(item);
+    if (tag === null) {
+      if (item.trim() !== "") return true; // something was written, and it normalises to nothing
+      continue;
+    }
+    if (Array.from(cleanTag(item)).length > MAX_TAG_LENGTH) return true; // cut short
+    kept.add(tag);
+  }
+  return kept.size > MAX_TAGS;
+}
+
 /**
- * One stored entry, or null when it is not usable. Unknown fields are kept; known
- * ones that are invalid (a status that is not one of the three, tags that are not
- * strings) are dropped rather than trusted.
+ * One stored entry and whether reading it lost anything. Unknown fields are kept; known ones
+ * that are invalid (a status that is not one of the three, a note that is not text, tags that are
+ * not a list of strings, more tags than fit) are dropped or cut rather than trusted, and that is
+ * reported as `lossy` so the caller can keep a copy of the file first. Differences that lose
+ * nothing (tag case or spacing, a blank note, duplicate tags) are not.
  */
-export function parseEntry(value: unknown): LibraryEntry | null {
-  if (!isRecord(value) || typeof value.addedAt !== "number" || !isPaperLike(value.paper)) return null;
+export function parseEntryChecked(value: unknown): { entry: LibraryEntry | null; lossy: boolean } {
+  if (!isRecord(value) || typeof value.addedAt !== "number" || !isPaperLike(value.paper)) return { entry: null, lossy: false };
   const entry = { ...value } as unknown as LibraryEntry;
+  let lossy = false;
   if (!isStatus(entry.status)) {
+    if (entry.status !== undefined) lossy = true;
     delete entry.status;
     delete entry.statusAt;
   } else if (typeof entry.statusAt !== "number" || !Number.isFinite(entry.statusAt)) {
+    if (entry.statusAt !== undefined) lossy = true;
     delete entry.statusAt;
   }
   const tags = normalizeTags(value.tags);
+  if (value.tags !== undefined && (!Array.isArray(value.tags) || tagsLoseInformation(value.tags))) lossy = true;
   if (tags.length > 0) entry.tags = tags;
   else delete entry.tags;
-  if (typeof entry.note !== "string" || entry.note.trim() === "") delete entry.note;
-  return entry;
+  if (typeof entry.note !== "string") {
+    if (entry.note !== undefined) lossy = true;
+    delete entry.note;
+  } else if (entry.note.trim() === "") {
+    delete entry.note;
+  }
+  return { entry, lossy };
+}
+
+/** One stored entry, or null when it is not usable. See parseEntryChecked. */
+export function parseEntry(value: unknown): LibraryEntry | null {
+  return parseEntryChecked(value).entry;
 }
 
 /** The first desktop build kept a bare list of { paper, savedAt } under the same key. */
-function fromLegacyList(list: unknown[]): (LibraryEntry | null)[] {
+function fromLegacyList(list: unknown[]): Candidate[] {
   return list.map((item) => {
     if (!isRecord(item) || !isPaperLike(item.paper)) return null;
     const at = typeof item.savedAt === "string" ? Date.parse(item.savedAt) : NaN;
-    return { paper: item.paper, addedAt: Number.isNaN(at) ? Date.now() : at };
+    return { entry: { paper: item.paper, addedAt: Number.isNaN(at) ? Date.now() : at }, lossy: false };
   });
 }
+
+/** An entry as read from the file (null: unusable), and whether reading it lost anything. */
+type Candidate = { entry: LibraryEntry; lossy: boolean } | null;
 
 /**
  * Drops what failed to parse and folds entries that share a paper id into the first (the views key
  * on the id, and every update addresses the first). Nothing the duplicates held is lost: notes are
  * joined, tags are united, and a status is taken from the first entry that has one.
  */
-function settleEntries(candidates: readonly (LibraryEntry | null)[]): { entries: LibraryEntry[]; repaired: number } {
+function settleEntries(candidates: readonly Candidate[]): { entries: LibraryEntry[]; repaired: number } {
   const entries: LibraryEntry[] = [];
   const at = new Map<string, number>();
   let repaired = 0;
-  for (const candidate of candidates) {
-    if (candidate === null) {
+  for (const read of candidates) {
+    if (read === null) {
       repaired++;
       continue;
     }
+    if (read.lossy) repaired++;
+    const candidate = read.entry;
     const first = at.get(candidate.paper.id);
     if (first === undefined) {
       at.set(candidate.paper.id, entries.length);
@@ -156,6 +197,8 @@ function settleEntries(candidates: readonly (LibraryEntry | null)[]): { entries:
     }
     repaired++;
     let merged = entries[first];
+    // A file stored for the duplicate would otherwise be left in the blob store with nothing pointing at it.
+    if (!merged.paper.localFile && candidate.paper.localFile) merged = { ...merged, paper: { ...merged.paper, localFile: candidate.paper.localFile } };
     if (candidate.note !== undefined) merged = withNote(merged, mergeNotes(merged.note, candidate.note));
     const tags = normalizeTags([...(merged.tags ?? []), ...(candidate.tags ?? [])]);
     if (tags.length > 0) merged = { ...merged, tags };
@@ -179,9 +222,21 @@ const KNOWN_FILE_KEYS = new Set(["version", "entries", "orphanNotes", "migrated"
 /** Reads the bare list, v1 and v2 alike; anything else is an empty library. */
 export function parseLibraryFile(raw: unknown): ParsedLibrary {
   if (Array.isArray(raw)) return { ...settleEntries(fromLegacyList(raw)), orphans: new Map(), migrated: {}, extra: {} };
-  if (!isRecord(raw) || !Array.isArray(raw.entries)) return { entries: [], orphans: new Map(), migrated: {}, extra: {}, repaired: 0 };
+  if (!isRecord(raw) || !Array.isArray(raw.entries)) {
+    // No file is a clean start; a file whose shape this build does not know is replaced by the next
+    // write, so it counts (and gets backed up first).
+    return { entries: [], orphans: new Map(), migrated: {}, extra: {}, repaired: raw === null || raw === undefined ? 0 : 1 };
+  }
 
-  const { entries, repaired } = settleEntries(raw.entries.map(parseEntry));
+  const settled = settleEntries(
+    raw.entries.map((item): Candidate => {
+      const read = parseEntryChecked(item);
+      return read.entry ? { entry: read.entry, lossy: read.lossy } : null;
+    }),
+  );
+  const entries = settled.entries;
+  // A file from a newer version is written back as version 2, which may not keep everything it held.
+  const repaired = settled.repaired + (typeof raw.version === "number" && raw.version > 2 ? 1 : 0);
   const migrated: Migrated = isRecord(raw.migrated) ? { ...raw.migrated } : {};
   // A flag only counts when it is exactly `true`; anything else means that import has not run.
   if (migrated.queue !== true) delete migrated.queue;
