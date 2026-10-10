@@ -73,8 +73,9 @@ search, the AI Brief and the local library. Roughly in order of value.
 - **Direct lookup** in Paper Search: paste a DOI, arXiv id or URL and go to that
   paper (all three APIs support it).
 - **Send a brief to Notes / the library** as a markdown item.
-- **Library organisation**: tags or collections, "read / unread", and full-text
-  search inside local PDFs via the pdf.js text layer.
+- **Library organisation**: collections / projects, and full-text search
+  inside local PDFs via the pdf.js text layer. (Tags and reading status
+  shipped with the one-record-per-paper change.)
 - **Drop a PDF onto a specific library row** to attach it (today: the ＋PDF
   button).
 - **CI**: `npm run check`, `npm test`, `npm run build` on every push, and a

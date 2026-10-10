@@ -77,7 +77,9 @@ interface LibraryFile {
 `hasOrphanNote(paper)` for the Annotations hint. All writes go through one `persist()`, which now
 coalesces: the first write happens immediately (so behaviour and tests are unchanged), writes requested
 while one is in flight collapse into a single follow-up write of the latest state. This matters because
-notes now live in the same file as the whole library and are saved as the user types.
+notes now live in the same file as the whole library and are saved as the user types. A failed write
+is reported once with a toast and retried by itself (5 s, doubling, capped at 60 s); a later edit
+writes at once and cancels the pending retry.
 
 ### Migrations (run once, inside `load()`, never delete the old files)
 
@@ -86,14 +88,17 @@ in the app-data folder, and in the **raw** `localStorage` keys `queue` / `annota
 browser (not the `fieldnotes:<file>:<key>` form `storage.ts` uses), so a `loadLegacy(file, key)` reader
 is added next to `loadLegacyWorkspace`.
 
-- **Queue**: valid entries, oldest first → `addPapers` (so identity merging applies, keeping the
-  library's own copy and id), then `status` / `statusAt` on the resulting record; an existing status wins.
-  A new library entry takes the queue entry's `addedAt`. Entries whose status is unknown become
-  `to-read`; entries that are not paper-shaped are skipped.
-- **Annotations**: for each `id → text` with a non-blank string: if an entry has that id the text
-  becomes its note (if that entry already has a different note the two are joined, never overwritten);
-  otherwise it is kept in `orphanNotes[id]` and adopted when a paper with that id is later added or
-  ensured. Queue runs first so queued papers exist before their notes are matched.
+- **Annotations (runs first)**: for each `id → text` with a non-blank string: if an entry has that id
+  the text becomes its note (if that entry already has a different note the two are joined, never
+  overwritten); otherwise it is kept in `orphanNotes[id]` and adopted when a paper with that id is
+  later added or ensured.
+- **Queue (runs second)**: valid entries, oldest first → `addPapers` (so identity merging applies,
+  keeping the library's own copy and id, and adopting any note waiting under the id the paper was
+  queued as, even if it merges into an entry with another id), then `status` / `statusAt` on the
+  resulting record; an existing status wins. A new library entry takes the queue entry's `addedAt`.
+  Entries whose status is unknown become `to-read`; entries that are not paper-shaped are skipped.
+  *(Originally planned the other way round; review showed a note keyed by a merged-away id would be
+  stranded as an orphan.)*
 - A legacy file that is absent does nothing. One that is present sets `migrated.<name>` in the same
   write that stores the result, so a repeat run is a no-op. One that cannot be read leaves the flag
   unset (retried next launch) and never blocks the library from loading.
@@ -110,7 +115,9 @@ is added next to `loadLegacyWorkspace`.
   flushed when the selection changes or the module is removed (today a quick switch drops the first
   paper's last edit because one shared timer is cleared).
 - **Library**: status selector and tag chips on each row, filters by status and tag (extends
-  `library/query.ts`; the text filter also matches tags).
+  `library/query.ts`; the text filter also matches tags). Removing a paper deletes its tags and
+  status but **keeps its note** waiting under the paper's id (as the old annotations store did), so
+  saving the same paper again brings it back; the confirm button's tooltip says so.
 - **Export**: BibTeX gets `keywords` (tags), Markdown gets Status / Tags / Notes, JSON gets `status`,
   `tags`, `note` and keeps `annotation` (= `note`) and `savedAt`. The "Include annotations" box controls
   notes only. `toBibTeX/toMarkdown/toJSON` take `{ notes }` instead of an annotations map.
@@ -167,6 +174,11 @@ is added next to `loadLegacyWorkspace`.
 11. **CI uses first-party actions only**, pinned by major tag, not by SHA; a `cargo check` job uses the
     runner's preinstalled Rust instead of a third-party toolchain action.
 12. **Annotations flush-on-switch** fixes an existing dropped-edit bug in a module this change rewrites.
+13. **Removal keeps the note** (orphan) instead of deleting it with the entry (after review).
+14. **Write failures are surfaced and retried** rather than only logged (after review).
+15. **Annotations migrate before the queue** (after review; see Migrations).
+16. **First entry wins** when two entries share an identity key, in `addPapers` as in `findEntryIndex`
+    (after review; `addPapers` used to merge into the last).
 
 ## Not verifiable from this environment
 
@@ -178,3 +190,22 @@ is added next to `loadLegacyWorkspace`.
 - GitHub Actions: the workflow cannot be executed here.
 - The desktop window: native dialogs, OS file drops, the Tauri store file itself (migration from the real
   `queue.json` / `annotations.json`) — covered by the manual checklist in the PR.
+
+## Changes made after the code review
+
+Ten findings; each was reproduced first (a failing unit test or a browser check) and fixed with a test
+that fails without the fix, except where noted.
+
+1. Removing a paper deleted its note → kept as an orphan (`removeEntry`), tooltip on the confirm button.
+2. A pending edit for a removed paper was dropped silently → a toast says so.
+3. A failed write was only `console.error`ed → toast once, automatic retry with backoff.
+4. `addPapers` merged into the last of two same-titled entries while `findEntryIndex` picked the first →
+   first wins in both.
+5. `console.log` in `scripts/tauriParity.ts` against `CLAUDE.md` → `process.stdout.write`.
+6. Unknown flags inside `migrated` were dropped → preserved.
+7. A note keyed by an id that merged into another entry stayed an orphan → annotations now migrate first.
+8. The Enter that confirms an IME candidate committed a half-typed tag → ignored while composing.
+9. `loadLegacy` duplicated `loadLegacyWorkspace` → the latter delegates.
+10. *Not changed:* "by-id scans are O(n) with key computation". By-id lookups compute no keys and cost
+    62 µs worst case at 5000 entries; `idFor`, which does compute keys, is cached (found separately in
+    self-review: 9.3 ms → 0.78 ms).
