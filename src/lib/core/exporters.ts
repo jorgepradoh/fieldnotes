@@ -1,4 +1,4 @@
-import type { LibraryEntry } from "./library.svelte";
+import type { LibraryEntry } from "../library/model";
 
 type AnnotationMap = Record<string, string>;
 

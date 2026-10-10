@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { toBibTeX, toMarkdown, toJSON } from "./exporters";
-import type { LibraryEntry } from "./library.svelte";
+import type { LibraryEntry } from "../library/model";
 
 const FULL_PAPER: LibraryEntry = {
   addedAt: Date.parse("2024-01-15T10:00:00.000Z"),

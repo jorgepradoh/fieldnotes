@@ -5,29 +5,31 @@
  * the same file twice never stores it twice.
  */
 import { fileId } from "../library/files";
-import { mergePapers, paperKeys } from "../sources/merge";
+import { migrateAnnotations, migrateQueue } from "../library/migrate";
+import {
+  addPapers,
+  adoptOrphan,
+  findEntryIndex,
+  parseLibraryFile,
+  serializeLibrary,
+  tagCounts,
+  withNote,
+  withStatus,
+  withTag,
+  withoutTag,
+  type LibraryData,
+  type LibraryEntry,
+  type Migrated,
+  type PaperStatus,
+  type TagResult,
+} from "../library/model";
+import { queueColumns } from "../library/queue";
 import type { LocalFileRef, Paper } from "../sources/types";
 import { deleteBlob, getBlob, putBlob } from "./blobs";
-import { loadJson, saveJson } from "./storage";
+import { loadJson, loadLegacy, saveJson } from "./storage";
 
 const FILE = "library.json";
 const KEY = "library";
-
-export interface LibraryEntry {
-  paper: Paper;
-  addedAt: number;
-}
-
-interface LibraryFile {
-  version: 1;
-  entries: LibraryEntry[];
-}
-
-/** The first desktop build kept a bare list of these under the same key. */
-interface LegacyEntry {
-  paper: Paper;
-  savedAt: string;
-}
 
 export interface AddResult {
   /** Papers that were new to the library. */
@@ -36,40 +38,18 @@ export interface AddResult {
   merged: number;
 }
 
-function isEntry(value: unknown): value is LibraryEntry {
-  if (typeof value !== "object" || value === null) return false;
-  const e = value as { paper?: Partial<Paper>; addedAt?: unknown };
-  return (
-    typeof e.addedAt === "number" &&
-    typeof e.paper === "object" &&
-    e.paper !== null &&
-    typeof e.paper.id === "string" &&
-    typeof e.paper.title === "string" &&
-    Array.isArray(e.paper.authors)
-  );
-}
-
-function fromLegacy(list: LegacyEntry[]): LibraryEntry[] {
-  return list
-    .map(({ paper, savedAt }) => {
-      const at = Date.parse(savedAt);
-      return { paper, addedAt: Number.isNaN(at) ? Date.now() : at };
-    })
-    .filter(isEntry);
-}
-
-/** Enrich `existing` with whatever `incoming` knows, keeping the library's own id and file. */
-function enrich(existing: Paper, incoming: Paper): Paper {
-  const merged = mergePapers(existing, incoming);
-  delete merged.sources;
-  return { ...merged, id: existing.id, source: existing.source, localFile: existing.localFile ?? incoming.localFile };
-}
-
 export class LibraryState {
   entries = $state.raw<LibraryEntry[]>([]);
   loaded = $state(false);
   papers = $derived(this.entries.map((e) => e.paper));
+  /** Notes written under an id no entry has yet; see library/model.ts. */
+  orphans = $state.raw<Map<string, string>>(new Map());
+  private migrated: Migrated = {};
+  /** Top-level fields of library.json this build does not know, written back untouched. */
+  private extra: Record<string, unknown> = {};
   private loading: Promise<void> | null = null;
+  private writing = false;
+  private dirty = false;
 
   ensureLoaded(): Promise<void> {
     this.loading ??= this.load();
@@ -77,10 +57,42 @@ export class LibraryState {
   }
 
   private async load(): Promise<void> {
-    const raw = await loadJson<LibraryFile | LegacyEntry[]>(FILE, KEY);
-    if (Array.isArray(raw)) this.entries = fromLegacy(raw);
-    else this.entries = Array.isArray(raw?.entries) ? raw.entries.filter(isEntry) : [];
+    const parsed = parseLibraryFile(await loadJson<unknown>(FILE, KEY));
+    this.extra = parsed.extra;
+    const stored: LibraryData = { entries: parsed.entries, orphans: parsed.orphans, migrated: parsed.migrated };
+    const data = await this.migrateOldStores(stored);
+    this.apply(data);
     this.loaded = true;
+    // Only a migration that ran changes the file; plain loading leaves it as it was.
+    if (data !== stored) this.persist();
+  }
+
+  /** Imports the old queue and annotations once. A store that can't be read is retried next launch. */
+  private async migrateOldStores(data: LibraryData): Promise<LibraryData> {
+    let next = data;
+    if (!next.migrated.queue) next = migrateQueue(next, await readOldStore("queue.json", "queue"), Date.now());
+    if (!next.migrated.annotations) next = migrateAnnotations(next, await readOldStore("annotations.json", "annotations"));
+    return next;
+  }
+
+  private data(): LibraryData {
+    return { entries: this.entries, orphans: this.orphans, migrated: this.migrated };
+  }
+
+  private apply(data: LibraryData): void {
+    this.entries = data.entries;
+    this.orphans = data.orphans;
+    this.migrated = data.migrated;
+  }
+
+  private commit(data: LibraryData): void {
+    this.apply(data);
+    this.persist();
+  }
+
+  /** Writing before the stored library has been read would overwrite it with a partial list. */
+  private requireLoaded(): void {
+    if (!this.loaded) throw new Error("The library is still loading.");
   }
 
   get(id: string): Paper | undefined {
@@ -89,41 +101,107 @@ export class LibraryState {
 
   /** The library's copy of a paper from elsewhere (same id, DOI, arXiv id or title), if saved. */
   find(paper: Paper): Paper | undefined {
-    const keys = new Set(paperKeys(paper));
-    return this.entries.find((e) => e.paper.id === paper.id || paperKeys(e.paper).some((k) => keys.has(k)))?.paper;
+    const at = findEntryIndex(this.entries, paper);
+    return at < 0 ? undefined : this.entries[at].paper;
   }
 
-  /** Add papers, merging duplicates into what is already there. One write for the whole batch. */
-  addMany(papers: Paper[], now = Date.now()): AddResult {
-    // Writing before the stored library has been read would overwrite it with a partial list.
-    if (!this.loaded) throw new Error("The library is still loading.");
-    const entries = [...this.entries];
-    const byId = new Map<string, number>();
-    const byKey = new Map<string, number>();
-    const index = (paper: Paper, at: number): void => {
-      byId.set(paper.id, at);
-      for (const key of paperKeys(paper)) byKey.set(key, at);
-    };
-    entries.forEach((e, i) => index(e.paper, i));
+  // ------------------------------------------------------------ the record
 
-    const added: Paper[] = [];
-    let merged = 0;
-    for (const paper of papers) {
-      const hit = byId.get(paper.id) ?? paperKeys(paper).map((k) => byKey.get(k)).find((i) => i !== undefined);
-      if (hit !== undefined) {
-        entries[hit] = { ...entries[hit], paper: enrich(entries[hit].paper, paper) };
-        index(entries[hit].paper, hit);
-        merged++;
-      } else {
-        entries.push({ paper, addedAt: now });
-        index(paper, entries.length - 1);
-        added.push(paper);
-      }
+  /** The record id of a paper from any source: the id of the entry it matches, if it is saved. */
+  idFor(paper: Paper): string | undefined {
+    return this.find(paper)?.id;
+  }
+
+  /**
+   * The record id for a paper, saving it first if it isn't in the library. A note that was
+   * written for this paper under its own id before the library was the one record is
+   * brought along.
+   */
+  ensure(paper: Paper): string {
+    this.requireLoaded();
+    const at = findEntryIndex(this.entries, paper);
+    if (at < 0) {
+      const outcome = addPapers(this.data(), [paper], Date.now());
+      this.commit(outcome.data);
+      return outcome.ids[0];
     }
-    if (added.length > 0 || merged > 0) {
+    if (this.orphans.has(paper.id)) {
+      const entries = [...this.entries];
+      const orphans = new Map(this.orphans);
+      adoptOrphan(entries, orphans, paper.id, at);
+      this.commit({ ...this.data(), entries, orphans });
+    }
+    return this.entries[at].paper.id;
+  }
+
+  /** True when a note from before the library was the one record is waiting for this paper to be saved. */
+  hasOrphanNote(paper: Paper): boolean {
+    return this.orphans.has(paper.id);
+  }
+
+  statusOf(id: string): PaperStatus | undefined {
+    return this.entries.find((e) => e.paper.id === id)?.status;
+  }
+
+  noteOf(id: string): string {
+    return this.entries.find((e) => e.paper.id === id)?.note ?? "";
+  }
+
+  /** Entries in one queue column, most recently moved first. */
+  byStatus(status: PaperStatus): LibraryEntry[] {
+    return queueColumns(this.entries)[status];
+  }
+
+  /** Every tag in use with how many papers carry it, most used first. */
+  tags(): { tag: string; count: number }[] {
+    return tagCounts(this.entries);
+  }
+
+  /** Set (or with null, clear) the reading status. False when no such entry exists. */
+  setStatus(id: string, status: PaperStatus | null, now = Date.now()): boolean {
+    return this.update(id, (e) => withStatus(e, status, now));
+  }
+
+  setNote(id: string, text: string): boolean {
+    return this.update(id, (e) => withNote(e, text));
+  }
+
+  addTag(id: string, raw: string): TagResult {
+    let result: TagResult = "invalid";
+    this.update(id, (e) => {
+      const change = withTag(e, raw);
+      result = change.result;
+      return change.entry;
+    });
+    return result;
+  }
+
+  removeTag(id: string, raw: string): boolean {
+    return this.update(id, (e) => withoutTag(e, raw));
+  }
+
+  /** Replace one entry; the same object back means nothing changed, so nothing is written. */
+  private update(id: string, change: (entry: LibraryEntry) => LibraryEntry): boolean {
+    this.requireLoaded();
+    const at = this.entries.findIndex((e) => e.paper.id === id);
+    if (at < 0) return false;
+    const next = change(this.entries[at]);
+    if (next !== this.entries[at]) {
+      const entries = [...this.entries];
+      entries[at] = next;
       this.entries = entries;
       this.persist();
     }
+    return true;
+  }
+
+  // --------------------------------------------------------------- adding
+
+  /** Add papers, merging duplicates into what is already there. One write for the whole batch. */
+  addMany(papers: Paper[], now = Date.now()): AddResult {
+    this.requireLoaded();
+    const { data, added, merged } = addPapers(this.data(), papers, now);
+    if (added.length > 0 || merged > 0) this.commit(data);
     return { added, merged };
   }
 
@@ -219,11 +297,39 @@ export class LibraryState {
     return blob ? new TextDecoder("utf-8").decode(blob.data) : null;
   }
 
+  /**
+   * Writes the whole library. The first write goes out at once; writes asked for while one
+   * is in flight collapse into a single follow-up with the latest state, so typing a note
+   * does not queue a rewrite of the file per pause.
+   */
   private persist(): void {
-    const file: LibraryFile = { version: 1, entries: this.entries };
-    saveJson(FILE, KEY, file).catch((err: unknown) => {
-      console.error("Could not save the library", err);
-    });
+    if (this.writing) {
+      this.dirty = true;
+      return;
+    }
+    this.writing = true;
+    const write = (): void => {
+      this.dirty = false;
+      saveJson(FILE, KEY, serializeLibrary(this.data(), this.extra))
+        .catch((err: unknown) => {
+          console.error("Could not save the library", err);
+        })
+        .finally(() => {
+          if (this.dirty) write();
+          else this.writing = false;
+        });
+    };
+    write();
+  }
+}
+
+/** The old queue / annotations store, or undefined when it can't be read (logged, retried next launch). */
+async function readOldStore(file: string, key: string): Promise<unknown> {
+  try {
+    return await loadLegacy<unknown>(file, key);
+  } catch (err) {
+    console.error(`Could not read ${file} to import it into the library`, err);
+    return undefined;
   }
 }
 
