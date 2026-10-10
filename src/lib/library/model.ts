@@ -44,6 +44,8 @@ export interface LibraryData {
 export interface ParsedLibrary extends LibraryData {
   /** Top-level fields this build does not know; written back untouched. */
   extra: Record<string, unknown>;
+  /** Entries that could not be read as they were (dropped, or merged into another with the same id). */
+  repaired: number;
 }
 
 export const MAX_TAG_LENGTH = 40;
@@ -124,14 +126,45 @@ export function parseEntry(value: unknown): LibraryEntry | null {
 }
 
 /** The first desktop build kept a bare list of { paper, savedAt } under the same key. */
-function fromLegacyList(list: unknown[]): LibraryEntry[] {
-  const entries: LibraryEntry[] = [];
-  for (const item of list) {
-    if (!isRecord(item) || !isPaperLike(item.paper)) continue;
+function fromLegacyList(list: unknown[]): (LibraryEntry | null)[] {
+  return list.map((item) => {
+    if (!isRecord(item) || !isPaperLike(item.paper)) return null;
     const at = typeof item.savedAt === "string" ? Date.parse(item.savedAt) : NaN;
-    entries.push({ paper: item.paper, addedAt: Number.isNaN(at) ? Date.now() : at });
+    return { paper: item.paper, addedAt: Number.isNaN(at) ? Date.now() : at };
+  });
+}
+
+/**
+ * Drops what failed to parse and folds entries that share a paper id into the first (the views key
+ * on the id, and every update addresses the first). Nothing the duplicates held is lost: notes are
+ * joined, tags are united, and a status is taken from the first entry that has one.
+ */
+function settleEntries(candidates: readonly (LibraryEntry | null)[]): { entries: LibraryEntry[]; repaired: number } {
+  const entries: LibraryEntry[] = [];
+  const at = new Map<string, number>();
+  let repaired = 0;
+  for (const candidate of candidates) {
+    if (candidate === null) {
+      repaired++;
+      continue;
+    }
+    const first = at.get(candidate.paper.id);
+    if (first === undefined) {
+      at.set(candidate.paper.id, entries.length);
+      entries.push(candidate);
+      continue;
+    }
+    repaired++;
+    let merged = entries[first];
+    if (candidate.note !== undefined) merged = withNote(merged, mergeNotes(merged.note, candidate.note));
+    const tags = normalizeTags([...(merged.tags ?? []), ...(candidate.tags ?? [])]);
+    if (tags.length > 0) merged = { ...merged, tags };
+    if (merged.status === undefined && candidate.status !== undefined) {
+      merged = { ...merged, status: candidate.status, statusAt: candidate.statusAt ?? candidate.addedAt };
+    }
+    entries[first] = merged;
   }
-  return entries;
+  return { entries, repaired };
 }
 
 function parseOrphans(raw: unknown): Map<string, string> {
@@ -145,17 +178,17 @@ const KNOWN_FILE_KEYS = new Set(["version", "entries", "orphanNotes", "migrated"
 
 /** Reads the bare list, v1 and v2 alike; anything else is an empty library. */
 export function parseLibraryFile(raw: unknown): ParsedLibrary {
-  if (Array.isArray(raw)) return { entries: fromLegacyList(raw), orphans: new Map(), migrated: {}, extra: {} };
-  if (!isRecord(raw) || !Array.isArray(raw.entries)) return { entries: [], orphans: new Map(), migrated: {}, extra: {} };
+  if (Array.isArray(raw)) return { ...settleEntries(fromLegacyList(raw)), orphans: new Map(), migrated: {}, extra: {} };
+  if (!isRecord(raw) || !Array.isArray(raw.entries)) return { entries: [], orphans: new Map(), migrated: {}, extra: {}, repaired: 0 };
 
-  const entries = raw.entries.map(parseEntry).filter((e): e is LibraryEntry => e !== null);
+  const { entries, repaired } = settleEntries(raw.entries.map(parseEntry));
   const migrated: Migrated = isRecord(raw.migrated) ? { ...raw.migrated } : {};
   // A flag only counts when it is exactly `true`; anything else means that import has not run.
   if (migrated.queue !== true) delete migrated.queue;
   if (migrated.annotations !== true) delete migrated.annotations;
   const extra: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(raw)) if (!KNOWN_FILE_KEYS.has(key)) extra[key] = value;
-  return { entries, orphans: parseOrphans(raw.orphanNotes), migrated, extra };
+  return { entries, orphans: parseOrphans(raw.orphanNotes), migrated, extra, repaired };
 }
 
 /** What gets written: unknown top-level fields first so the ones we own always win. */
@@ -239,10 +272,16 @@ function keysOfEntryPaper(paper: Paper): string[] {
   return keys;
 }
 
-/** Index of the entry holding this paper under any of its identities (id, DOI, arXiv id, title), or -1. */
+/**
+ * Index of the entry holding this paper, or -1. An entry with the same id is always the one (two
+ * entries can share a title on purpose, say two different files, and each must resolve to itself);
+ * otherwise the first entry sharing an identity key (DOI, arXiv id, title).
+ */
 export function findEntryIndex(entries: readonly LibraryEntry[], paper: Paper): number {
+  const sameId = entries.findIndex((e) => e.paper.id === paper.id);
+  if (sameId >= 0) return sameId;
   const keys = new Set(paperKeys(paper));
-  return entries.findIndex((e) => e.paper.id === paper.id || keysOfEntryPaper(e.paper).some((k) => keys.has(k)));
+  return entries.findIndex((e) => keysOfEntryPaper(e.paper).some((k) => keys.has(k)));
 }
 
 /** Moves a note waiting under `key` onto the entry at `at`. Mutates its arguments (callers hold copies). */
@@ -272,8 +311,8 @@ export function addPapers(data: LibraryData, papers: readonly Paper[], now: numb
   const orphans = new Map(data.orphans);
   const byId = new Map<string, number>();
   const byKey = new Map<string, number>();
-  // The first entry wins, as in findEntryIndex: two entries can share a title on purpose (two
-  // different files), and "the record" for a paper must be the same one everywhere.
+  // Same rule as findEntryIndex, so "the record" for a paper is the same entry everywhere: an id match
+  // first, else the first entry sharing an identity key.
   const index = (paper: Paper, at: number): void => {
     if (!byId.has(paper.id)) byId.set(paper.id, at);
     for (const key of paperKeys(paper)) if (!byKey.has(key)) byKey.set(key, at);
@@ -284,8 +323,8 @@ export function addPapers(data: LibraryData, papers: readonly Paper[], now: numb
   const ids: string[] = [];
   let merged = 0;
   papers.forEach((paper, i) => {
-    const matches = [byId.get(paper.id), ...paperKeys(paper).map((k) => byKey.get(k))].filter((at): at is number => at !== undefined);
-    const hit = matches.length > 0 ? Math.min(...matches) : undefined;
+    const keyMatches = paperKeys(paper).map((k) => byKey.get(k)).filter((at): at is number => at !== undefined);
+    const hit = byId.get(paper.id) ?? (keyMatches.length > 0 ? Math.min(...keyMatches) : undefined);
     let at: number;
     if (hit !== undefined) {
       entries[hit] = { ...entries[hit], paper: enrich(entries[hit].paper, paper) };

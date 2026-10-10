@@ -185,17 +185,29 @@ everywhere. Papers are recognised as the same by DOI, arXiv id or title.
 
 - **Removing a paper** from the library removes its tags and reading status.
   Its **note is kept** and comes back if you save the same paper again (the
-  Annotations module tells you when one is waiting).
+  Annotations module tells you when one is waiting). A note is matched by the
+  paper's id, so saving the paper again from a *different* source (another id)
+  does not bring it back; it stays in `library.json` under `orphanNotes`.
+- Two files with the same title (say two versions of a PDF) stay two records:
+  a note, status or tag set on one never lands on the other.
 - **Upgrading.** The first launch of this version imports your old Reading
   Queue and annotations into the library: queued papers are saved with their
   status, and each note goes to the paper it was written for. The old
   `queue.json` / `annotations.json` files (or, in a browser, the `queue` /
   `annotations` entries) are **never changed or deleted**, and are not read
-  again once imported. `library.json` becomes version 2 on that launch; an
+  again once imported. If your old queue held the same paper twice under
+  different ids, the more advanced status wins (Done over Reading over To
+  Read). `library.json` becomes version 2 on that launch; an
   older build can still read it but will not know about status, tags and notes
   and would drop them if it saved the library.
+- If `library.json` contains entries the app cannot read as they are (damaged,
+  or written by a newer version) or lists one paper twice, you are told how
+  many, and **a copy of the original file is kept** (under the key
+  `library.backup` in the same store file) before the repaired library is ever
+  written over it.
 - If saving the library fails (disk full, a locked file) you are told once and
-  the app retries by itself every few seconds until it works.
+  the app retries by itself, after 5 seconds and then at growing intervals up
+  to a minute, until it works.
 
 ## Layouts
 
@@ -317,7 +329,7 @@ docs/                ideas, plans and design notes
 
 ### Tests
 
-`npm test` runs ~670 unit tests: parsers (BibTeX, arXiv Atom, SSE), merge and
+`npm test` runs ~690 unit tests: parsers (BibTeX, arXiv Atom, SSE), merge and
 ranking logic, layout validation and migration, the library record (formats,
 migrations from the old queue and annotations, tags, write failures), both LLM
 providers against mocked streams, the library exporters and the Zotero adapter,

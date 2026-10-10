@@ -64,7 +64,9 @@ export class LibraryState {
   }
 
   private async load(): Promise<void> {
-    const parsed = parseLibraryFile(await loadJson<unknown>(FILE, KEY));
+    const raw = await loadJson<unknown>(FILE, KEY);
+    const parsed = parseLibraryFile(raw);
+    if (parsed.repaired > 0) this.keepBackup(raw, parsed.repaired);
     this.extra = parsed.extra;
     const stored: LibraryData = { entries: parsed.entries, orphans: parsed.orphans, migrated: parsed.migrated };
     const data = await this.migrateOldStores(stored);
@@ -85,6 +87,21 @@ export class LibraryState {
     if (!next.migrated.annotations) next = migrateAnnotations(next, await readOldStore("annotations.json", "annotations"));
     if (!next.migrated.queue) next = migrateQueue(next, await readOldStore("queue.json", "queue"), Date.now());
     return next;
+  }
+
+  /**
+   * The file held entries this build could not read as they were (damaged, from a newer build, or
+   * sharing a paper id). The next write replaces the file with the repaired library, so the
+   * original is kept first, as the layouts file does.
+   */
+  private keepBackup(raw: unknown, repaired: number): void {
+    saveJson(FILE, `${KEY}.backup`, raw).catch((err: unknown) => {
+      console.error("Could not back up the library file before repairing it", err);
+    });
+    toast(
+      `${repaired} ${repaired === 1 ? "entry" : "entries"} in your library file could not be read as they were (damaged, or listed twice). A copy of the original was kept.`,
+      "info",
+    );
   }
 
   private data(): LibraryData {
@@ -276,8 +293,10 @@ export class LibraryState {
     // would silently drop this one, so in that case keep both as separate entries.
     const match = this.find(paper);
     if (match?.localFile && match.localFile.id !== id) {
-      this.entries = [...this.entries, { paper, addedAt: Date.now() }];
-      this.persist();
+      const entries = [...this.entries, { paper, addedAt: Date.now() }];
+      const orphans = new Map(this.orphans);
+      adoptOrphan(entries, orphans, paper.id, entries.length - 1); // a note kept when this file was removed
+      this.commit({ ...this.data(), entries, orphans });
       return { paper, isNew: true };
     }
     this.addMany([paper]);
@@ -313,14 +332,20 @@ export class LibraryState {
    * Writes the whole library. The first write goes out at once; writes asked for while one
    * is in flight collapse into a single follow-up with the latest state, so typing a note
    * does not queue a rewrite of the file per pause. A failed write is reported once (not per
-   * attempt) and retried with a growing delay, so a transient failure does not leave the latest
-   * changes only in memory until some unrelated edit happens to trigger another write.
+   * attempt) and retried with a growing delay (5 s, doubling, capped at 60 s). While failing,
+   * edits do not trigger attempts of their own: the next retry writes whatever the state is by
+   * then, so the load on a failing store follows the backoff, not how fast the user types.
    */
   private persist(): void {
     if (this.writing) {
       this.dirty = true;
       return;
     }
+    if (this.failures > 0) return; // a retry is already scheduled
+    this.start();
+  }
+
+  private start(): void {
     this.writing = true;
     const write = (): void => {
       if (this.retry) clearTimeout(this.retry);
@@ -347,12 +372,14 @@ export class LibraryState {
             }
             this.retry = setTimeout(() => {
               this.retry = null;
-              this.persist();
+              this.start();
             }, Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** (this.failures - 1)));
           },
         )
         .finally(() => {
-          if (this.dirty) write();
+          // Edits made during a write that succeeded go out as one follow-up; after a failure the
+          // scheduled retry carries them.
+          if (this.dirty && this.failures === 0) write();
           else this.writing = false;
         });
     };

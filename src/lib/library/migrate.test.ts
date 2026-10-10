@@ -68,8 +68,25 @@ describe("migrateQueue", () => {
       NOW,
     );
     expect(out.entries).toHaveLength(1);
-    // The older queue entry came first and set the status; the later one does not overwrite it.
-    expect(out.entries[0]).toMatchObject({ status: "to-read" });
+    // The most advanced status wins: the paper was finished, whichever copy said so.
+    expect(out.entries[0]).toMatchObject({ status: "done", statusAt: Date.parse("2026-09-02T00:00:00.000Z") });
+  });
+
+  it("keeps the most advanced status of merged duplicates whichever copy is older", () => {
+    const copies = (olderStatus: string, newerStatus: string) => [
+      { paper: paper({ id: "s2:1", doi: "10.1000/dup" }), status: olderStatus, addedAt: "2026-09-01T00:00:00.000Z" },
+      { paper: paper({ id: "arxiv:2", doi: "10.1000/dup" }), status: newerStatus, addedAt: "2026-09-02T00:00:00.000Z" },
+    ];
+    expect(migrateQueue(empty(), copies("to-read", "done"), NOW).entries[0].status).toBe("done");
+    expect(migrateQueue(empty(), copies("done", "to-read"), NOW).entries[0].status).toBe("done");
+    expect(migrateQueue(empty(), copies("reading", "to-read"), NOW).entries[0].status).toBe("reading");
+    expect(migrateQueue(empty(), copies("to-read", "reading"), NOW).entries[0].status).toBe("reading");
+  });
+
+  it("never lets a queued duplicate outrank a status the entry already had", () => {
+    const existing: LibraryEntry = { paper: paper({ id: "s2:1", doi: "10.1000/dup" }), addedAt: 5, status: "to-read", statusAt: 9 };
+    const out = migrateQueue(withEntries(existing), [{ paper: paper({ id: "arxiv:2", doi: "10.1000/dup" }), status: "done", addedAt: "2026-09-02T00:00:00.000Z" }], NOW);
+    expect(out.entries[0]).toMatchObject({ status: "to-read", statusAt: 9 });
   });
 
   it("never replaces a status the entry already has", () => {

@@ -76,6 +76,11 @@ search, the AI Brief and the local library. Roughly in order of value.
 - **Library organisation**: collections / projects, and full-text search
   inside local PDFs via the pdf.js text layer. (Tags and reading status
   shipped with the one-record-per-paper change.)
+- **Orphan notes**: a note whose paper is not in the library (written for a
+  paper you later removed, or imported from the old annotations store under an
+  id that never came back) stays in `library.json` under `orphanNotes`, matched
+  only by the paper's own id. List them in the Library with copy / delete, and
+  reattach one by DOI or arXiv id.
 - **Drop a PDF onto a specific library row** to attach it (today: the ＋PDF
   button).
 - **CI**: `npm run check`, `npm test`, `npm run build` on every push, and a

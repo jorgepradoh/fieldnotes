@@ -15,6 +15,7 @@ import {
   isPaperLike,
   isStatus,
   mergeNotes,
+  STATUSES,
   type LibraryData,
   type PaperStatus,
 } from "./model";
@@ -54,10 +55,18 @@ export function migrateQueue(data: LibraryData, raw: unknown, now: number): Libr
   );
   const entries = [...outcome.data.entries];
   const at = new Map(entries.map((e, i) => [e.paper.id, i]));
+  // A status the entry had before this import is never replaced. When several queued items merge into
+  // one record, the most advanced status wins: reading progress does not go backwards, and a paper
+  // you have finished must not come back as "to read" because an older duplicate said so.
+  const setHere = new Set<number>();
   queued.forEach((q, i) => {
     const index = at.get(outcome.ids[i]);
-    if (index !== undefined && entries[index].status === undefined) {
+    if (index === undefined) return;
+    const current = entries[index].status;
+    const outranks = current !== undefined && setHere.has(index) && STATUSES.indexOf(q.status) > STATUSES.indexOf(current);
+    if (current === undefined || outranks) {
       entries[index] = { ...entries[index], status: q.status, statusAt: q.at };
+      setHere.add(index);
     }
   });
   return { ...outcome.data, entries, migrated: { ...data.migrated, queue: true } };

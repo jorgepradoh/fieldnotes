@@ -653,20 +653,6 @@ describe("writing", () => {
     expect(file.entries[0]).toMatchObject({ note: "n2", tags: ["t"] });
   });
 
-  it("keeps writing after the storage layer throws instead of returning a promise", async () => {
-    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const lib = await fresh();
-    saves.throwSync = true;
-    lib.add(paper({ id: "a" }));
-    await settle();
-    expect(error).toHaveBeenCalledWith("Could not save the library", expect.any(Error));
-    saves.throwSync = false;
-    lib.add(paper({ id: "b" }));
-    await settle();
-    expect((disk.get("library.json:library") as { entries: unknown[] }).entries).toHaveLength(2);
-    error.mockRestore();
-  });
-
   describe("when a write fails", () => {
     beforeEach(() => {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -676,18 +662,19 @@ describe("writing", () => {
       vi.useRealTimers();
     });
     const quiet = () => vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const flushPromises = async (ms: number) => vi.advanceTimersByTimeAsync(ms);
+    const advance = async (ms: number) => vi.advanceTimersByTimeAsync(ms);
+    const stored = () => (disk.get("library.json:library") as { entries: { paper: { id: string }; note?: string }[] } | undefined)?.entries;
 
     it("tells the user once, not on every attempt", async () => {
       const error = quiet();
       const lib = await fresh();
       saves.fail = true;
-      lib.add(paper({ id: "a" }));
-      await flushPromises(0);
-      lib.add(paper({ id: "b" })); // writes at once (cancelling the 5 s retry) and fails again: next retry in 10 s
-      await flushPromises(0);
+      lib.add(paper({ id: "a" })); // attempt 1 fails; retry in 5 s
+      await advance(0);
+      lib.add(paper({ id: "b" })); // no attempt of its own
+      await advance(5_000); // attempt 2 fails; retry in 10 s
       expect(saves.started).toBe(2);
-      await flushPromises(10_000); // the retry fails as well
+      await advance(10_000); // attempt 3 fails
       expect(saves.started).toBe(3);
       expect(toastSpy).toHaveBeenCalledTimes(1);
       expect(toastSpy).toHaveBeenCalledWith(expect.stringContaining("Could not save your library"), "error");
@@ -699,19 +686,19 @@ describe("writing", () => {
       const lib = await fresh();
       saves.fail = true;
       lib.add(paper({ id: "a" })); // attempt 1 fails; retry in 5 s
-      await flushPromises(0);
+      await advance(0);
       expect(saves.started).toBe(1);
-      await flushPromises(4_999);
+      await advance(4_999);
       expect(saves.started).toBe(1);
-      await flushPromises(1); // attempt 2 fails; retry in 10 s
+      await advance(1); // attempt 2 fails; retry in 10 s
       expect(saves.started).toBe(2);
-      await flushPromises(9_999);
+      await advance(9_999);
       expect(saves.started).toBe(2);
       saves.fail = false; // the disk recovers; no further edit is made
-      await flushPromises(1);
+      await advance(1);
       expect(saves.finished).toBe(1);
-      expect((disk.get("library.json:library") as { entries: unknown[] }).entries).toHaveLength(1);
-      await flushPromises(120_000);
+      expect(stored()).toHaveLength(1);
+      await advance(120_000);
       expect(saves.started).toBe(3); // and it stops retrying
       error.mockRestore();
     });
@@ -721,13 +708,13 @@ describe("writing", () => {
       const lib = await fresh();
       saves.fail = true;
       lib.add(paper({ id: "a" }));
-      await flushPromises(0);
+      await advance(0);
       saves.fail = false;
-      await flushPromises(5_000);
+      await advance(5_000);
       expect(toastSpy).toHaveBeenCalledTimes(1);
       saves.fail = true;
       lib.add(paper({ id: "b" }));
-      await flushPromises(0);
+      await advance(0);
       expect(toastSpy).toHaveBeenCalledTimes(2);
       error.mockRestore();
     });
@@ -737,38 +724,179 @@ describe("writing", () => {
       const lib = await fresh();
       saves.fail = true;
       lib.add(paper({ id: "a" }));
-      await flushPromises(0);
-      for (const wait of [5_000, 10_000, 20_000, 40_000, 60_000, 60_000]) await flushPromises(wait);
+      await advance(0);
+      for (const wait of [5_000, 10_000, 20_000, 40_000, 60_000, 60_000]) await advance(wait);
       expect(saves.started).toBe(7);
       error.mockRestore();
     });
 
-    it("a later edit writes at once and cancels the pending retry", async () => {
+    it("edits made while failing add no attempts of their own; the retry writes the latest state", async () => {
       const error = quiet();
       const lib = await fresh();
       saves.fail = true;
       lib.add(paper({ id: "a" }));
-      await flushPromises(0);
+      await advance(0);
+      expect(saves.started).toBe(1);
+      for (let i = 0; i < 150; i++) {
+        lib.setNote("a", `edit ${i}`);
+        await advance(400);
+      }
+      // 60 s of one edit every 400 ms against a failing store: attempts follow the backoff, not the edits.
+      expect(saves.started).toBeLessThanOrEqual(7);
+      saves.fail = false;
+      await advance(60_000);
+      expect(stored()?.[0].note).toBe("edit 149");
+      error.mockRestore();
+    });
+
+    it("an edit made during a write that then fails does not trigger an immediate extra attempt", async () => {
+      const error = quiet();
+      const lib = await fresh();
+      let release!: () => void;
+      saves.gate = new Promise<void>((resolve) => (release = resolve));
+      saves.fail = true;
+      lib.add(paper({ id: "a" })); // in flight, held on the gate
+      lib.setNote("a", "typed while the write was in flight");
+      saves.gate = null;
+      release();
+      await advance(0);
+      expect(saves.started).toBe(1);
+      saves.fail = false;
+      await advance(5_000); // the scheduled retry carries the edit
+      expect(saves.started).toBe(2);
+      expect(stored()?.[0].note).toBe("typed while the write was in flight");
+      error.mockRestore();
+    });
+
+    it("treats a storage layer that throws instead of returning a promise as a failed write", async () => {
+      const error = quiet();
+      const lib = await fresh();
+      saves.throwSync = true;
+      lib.add(paper({ id: "a" }));
+      await advance(0);
+      expect(error).toHaveBeenCalledWith("Could not save the library", expect.any(Error));
+      expect(toastSpy).toHaveBeenCalledTimes(1);
+      saves.throwSync = false;
+      await advance(5_000);
+      expect(stored()).toHaveLength(1); // saving did not stop for good
+      error.mockRestore();
+    });
+
+    it("recovers after an asynchronous failure and writes everything that was added meanwhile", async () => {
+      const error = quiet();
+      const lib = await fresh();
+      saves.fail = true;
+      lib.add(paper({ id: "a" }));
+      await advance(0);
       saves.fail = false;
       lib.add(paper({ id: "b" }));
-      await flushPromises(0);
-      expect(saves.finished).toBe(1);
-      await flushPromises(60_000);
-      expect(saves.started).toBe(2); // the retry timer was cancelled, so no third write
+      await advance(5_000);
+      expect(stored()?.map((e) => e.paper.id)).toEqual(["a", "b"]);
       error.mockRestore();
     });
   });
+});
 
-  it("keeps writing after a write fails", async () => {
-    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+describe("a library file that has to be repaired", () => {
+  const backup = () => disk.get("library.json:library.backup");
+
+  it("keeps a copy of the original before the repaired library is written over it", async () => {
+    const original = {
+      version: 2,
+      entries: [
+        { paper: paper({ id: "ok" }), addedAt: 1 },
+        { paper: paper({ id: "from-a-newer-build" }), addedAt: "2026-10-01T00:00:00Z", note: "the only copy of this note" },
+      ],
+    };
+    disk.set("library.json:library", structuredClone(original));
     const lib = await fresh();
+    await settle();
+    expect(lib.papers.map((p) => p.id)).toEqual(["ok"]);
+    expect(backup()).toEqual(original);
+    lib.setNote("ok", "an edit rewrites the file");
+    await settle();
+    expect(JSON.stringify(disk.get("library.json:library"))).not.toContain("from-a-newer-build");
+    expect(backup()).toEqual(original); // …and the copy still has the entry that was dropped
+    expect(toastSpy).toHaveBeenCalledWith(expect.stringContaining("1 entry in your library file could not be read"), "info");
+  });
+
+  it("says how many entries, in the plural too", async () => {
+    disk.set("library.json:library", { version: 2, entries: [{ paper: paper({ id: "ok" }), addedAt: 1 }, "junk", null, { addedAt: 3 }] });
+    await fresh();
+    expect(toastSpy).toHaveBeenCalledWith(expect.stringContaining("3 entries in your library file could not be read"), "info");
+  });
+
+  it("folds entries that share a paper id into one, keeping what each held, and backs the file up", async () => {
+    const original = { version: 2, entries: [
+      { paper: paper({ id: "dup" }), addedAt: 1, note: "first", tags: ["a"] },
+      { paper: paper({ id: "dup" }), addedAt: 2, note: "second", tags: ["b"], status: "reading", statusAt: 7 },
+    ] };
+    disk.set("library.json:library", structuredClone(original));
+    const lib = await fresh();
+    expect(lib.entries).toHaveLength(1);
+    expect(lib.entries[0]).toMatchObject({ note: "first\n\n---\n\nsecond", tags: ["a", "b"], status: "reading" });
+    await settle();
+    expect(backup()).toEqual(original);
+  });
+
+  it("writes no backup, and shows nothing, for a clean file, a v1 file, the bare list or no file", async () => {
+    for (const clean of [
+      { version: 2, entries: [{ paper: paper({ id: "a" }), addedAt: 1 }] },
+      { version: 1, entries: [{ paper: paper({ id: "a" }), addedAt: 1 }] },
+      [{ paper: paper({ id: "a" }), savedAt: "2026-06-16T10:00:00.000Z" }],
+      undefined,
+    ]) {
+      disk.clear();
+      toastSpy.mockClear();
+      if (clean !== undefined) disk.set("library.json:library", clean);
+      await fresh();
+      await settle();
+      expect(backup()).toBeUndefined();
+      expect(toastSpy).not.toHaveBeenCalled();
+    }
+  });
+
+  it("still loads when the backup cannot be written, and says so in the log", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    disk.set("library.json:library", { version: 2, entries: [{ paper: paper({ id: "ok" }), addedAt: 1 }, "junk"] });
     saves.fail = true;
-    lib.add(paper({ id: "a" }));
-    await vi.waitFor(() => expect(error).toHaveBeenCalledWith("Could not save the library", expect.any(Error)));
-    saves.fail = false;
-    lib.add(paper({ id: "b" }));
-    await vi.waitFor(() => expect(saves.finished).toBe(1));
-    expect((disk.get("library.json:library") as { entries: unknown[] }).entries).toHaveLength(2);
+    const lib = await fresh();
+    await settle();
+    expect(lib.papers.map((p) => p.id)).toEqual(["ok"]);
+    expect(error).toHaveBeenCalledWith("Could not back up the library file before repairing it", expect.any(Error));
     error.mockRestore();
+  });
+});
+
+describe("two entries with the same title (two different files)", () => {
+  const T = "A rather long title that is distinctive enough to match on";
+  const twoFiles = async () => {
+    const lib = await fresh();
+    const first = await lib.addDocument({ ...doc("one.pdf", buf(1, 1)), meta: { title: T, authors: [], year: null, abstract: null, venue: null } });
+    const second = await lib.addDocument({ ...doc("two.pdf", buf(2, 2)), meta: { title: T, authors: [], year: null, abstract: null, venue: null } });
+    return { lib, first: first.paper, second: second.paper };
+  };
+
+  it("each resolves to its own record, so a note or status never lands on the other", async () => {
+    const { lib, first, second } = await twoFiles();
+    expect(lib.idFor(first)).toBe(first.id);
+    expect(lib.idFor(second)).toBe(second.id);
+    lib.setNote(lib.idFor(second)!, "belongs to the second file");
+    lib.setStatus(lib.idFor(second)!, "reading");
+    expect(lib.noteOf(first.id)).toBe("");
+    expect(lib.statusOf(first.id)).toBeUndefined();
+    expect(lib.noteOf(second.id)).toBe("belongs to the second file");
+  });
+
+  it("dropping a removed noted file again brings its note back, even with the other file still there", async () => {
+    const { lib, first, second } = await twoFiles();
+    lib.setNote(second.id, "note on the second file");
+    await lib.remove(second.id);
+    expect(lib.orphans.get(second.id)).toBe("note on the second file");
+    const again = await lib.addDocument({ ...doc("two.pdf", buf(2, 2)), meta: { title: T, authors: [], year: null, abstract: null, venue: null } });
+    expect(again.paper.id).toBe(second.id);
+    expect(lib.noteOf(second.id)).toBe("note on the second file");
+    expect(lib.orphans.size).toBe(0);
+    expect(lib.noteOf(first.id)).toBe("");
   });
 });

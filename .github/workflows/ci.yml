@@ -10,7 +10,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push cancels a stale pull-request run, but every commit on main keeps its own result.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   web:
@@ -27,9 +28,21 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm run build
-      - run: npm audit --omit=dev --audit-level=high
       # npm @tauri-apps/* and the Rust tauri* crates must stay on the same minor.
       - run: npm run check:tauri-parity
+
+  # Its own job: a newly published advisory should be visible, but must not hide the results above.
+  audit:
+    name: Production dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Reads package-lock.json; no install needed.
+      - run: npm audit --omit=dev --audit-level=high
 
   rust:
     name: cargo check

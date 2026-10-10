@@ -177,8 +177,15 @@ is added next to `loadLegacyWorkspace`.
 13. **Removal keeps the note** (orphan) instead of deleting it with the entry (after review).
 14. **Write failures are surfaced and retried** rather than only logged (after review).
 15. **Annotations migrate before the queue** (after review; see Migrations).
-16. **First entry wins** when two entries share an identity key, in `addPapers` as in `findEntryIndex`
-    (after review; `addPapers` used to merge into the last).
+16. **An exact id match is the record; otherwise the first entry sharing an identity key**, in `addPapers`
+    and `findEntryIndex` alike (after review; `addPapers` used to merge into the last, and
+    `findEntryIndex` let an earlier entry that merely shared a title beat the entry with the same id).
+17. **Most advanced status wins** when several old-queue items merge into one record (to confirm; the
+    plan only said an existing library status is kept).
+18. **Back up before repairing** the library file (unreadable or duplicated-id entries), mirroring what
+    the layouts file does, rather than silently dropping them.
+19. **Retries follow the backoff, not the edit rate:** while a write is failing, edits do not trigger
+    attempts of their own; the scheduled retry writes the latest state.
 
 ## Not verifiable from this environment
 
@@ -209,3 +216,31 @@ that fails without the fix, except where noted.
 10. *Not changed:* "by-id scans are O(n) with key computation". By-id lookups compute no keys and cost
     62 µs worst case at 5000 entries; `idFor`, which does compute keys, is cached (found separately in
     self-review: 9.3 ms → 0.78 ms).
+
+## Changes made after the second review
+
+A second high-effort pass over the fixed branch found nine more. Reproduced first; unit tests and
+mutation checks for each, and UI scenarios for the two that are user-visible.
+
+1. `findEntryIndex` returned the *first* entry that matched by id **or** by title, so selecting the
+   second of two same-title files resolved to the first and its notes and status landed there →
+   an exact id match now wins (and `addPapers` uses the same rule).
+2. Entries the loader could not read were dropped on the next write with no copy → the raw file is
+   backed up first and the user is told how many entries were affected.
+3. `addDocument`'s keep-both branch bypassed note adoption → it adopts like every other path.
+4. A removed paper's note is matched by the paper's id only, so saving it again from another source does
+   not bring it back. *Reproduced, not changed:* it is how the old annotations store behaved (notes were
+   keyed by source id), a fix needs a multi-key orphan scheme with alias clean-up, and the note is
+   not lost (it stays in `orphanNotes`). Documented in the README; listing and reattaching orphan notes
+   is on the ideas list.
+5. Two entries with one paper id would throw `each_key_duplicate` in the keyed views → folded into the
+   first on load (notes joined, tags united, a status kept), counted as a repair and backed up.
+6. Every edit made while the disk was failing triggered an attempt (150 attempts for 150 edits in 60 s,
+   against about 5 for the backoff alone) → attempts follow the backoff only.
+7. CI cancelled in-progress runs on `main` too → only for pull requests.
+8. A new `npm audit` advisory would have stopped the job before the parity check → the audit is its own job.
+9. Merged old-queue duplicates kept the oldest copy's status, so a finished paper could come back as
+   "to read" → the most advanced status wins.
+
+Observed, not part of this change: the dev build logs Svelte's `state_proxy_equality_mismatch` warning on
+the file-import path. It appears identically on the pre-change commit (`b5ee275`), so it is left alone.

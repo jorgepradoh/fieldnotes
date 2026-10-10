@@ -183,6 +183,55 @@ describe("parseLibraryFile", () => {
     expect(parsed.extra).toEqual({ sync: { rev: 9 } });
   });
 
+  describe("repairs what it cannot read as it is, and says how much", () => {
+    it("counts entries that were dropped", () => {
+      const parsed = parseLibraryFile({ version: 2, entries: [{ paper: paper({ id: "ok" }), addedAt: 1 }, { paper: paper({ id: "newer" }), addedAt: "2026-10-01T00:00:00Z" }, "junk", null] });
+      expect(parsed.entries.map((e) => e.paper.id)).toEqual(["ok"]);
+      expect(parsed.repaired).toBe(3);
+    });
+
+    it("reports nothing for a clean file, a v1 file or an empty one", () => {
+      expect(parseLibraryFile({ version: 2, entries: [{ paper: paper({ id: "a" }), addedAt: 1 }] }).repaired).toBe(0);
+      expect(parseLibraryFile({ version: 1, entries: [] }).repaired).toBe(0);
+      expect(parseLibraryFile(null).repaired).toBe(0);
+    });
+
+    it("counts unusable items in the first build's bare list too", () => {
+      const parsed = parseLibraryFile([{ paper: paper({ id: "a" }), savedAt: "2026-06-16T10:00:00.000Z" }, { nope: true }, null]);
+      expect(parsed.entries).toHaveLength(1);
+      expect(parsed.repaired).toBe(2);
+    });
+
+    it("folds entries sharing a paper id into the first, losing neither note, tag nor status", () => {
+      const parsed = parseLibraryFile({
+        version: 2,
+        entries: [
+          { paper: paper({ id: "dup", title: "First copy of this paper, long enough" }), addedAt: 1, note: "first note", tags: ["a"] },
+          { paper: paper({ id: "other" }), addedAt: 2 },
+          { paper: paper({ id: "dup", title: "Second copy of this paper, long enough" }), addedAt: 3, note: "second note", tags: ["b", "a"], status: "done", statusAt: 9 },
+        ],
+      });
+      expect(parsed.entries.map((e) => e.paper.id)).toEqual(["dup", "other"]);
+      expect(parsed.entries[0]).toMatchObject({ addedAt: 1, note: "first note\n\n---\n\nsecond note", tags: ["a", "b"], status: "done", statusAt: 9 });
+      expect(parsed.entries[0].paper.title).toBe("First copy of this paper, long enough");
+      expect(parsed.repaired).toBe(1);
+    });
+
+    it("keeps the first entry's status when both have one", () => {
+      const parsed = parseLibraryFile({ version: 2, entries: [
+        { paper: paper({ id: "d" }), addedAt: 1, status: "reading", statusAt: 5 },
+        { paper: paper({ id: "d" }), addedAt: 2, status: "done", statusAt: 9 },
+      ] });
+      expect(parsed.entries[0]).toMatchObject({ status: "reading", statusAt: 5 });
+    });
+
+    it("folds duplicates in the bare list as well", () => {
+      const parsed = parseLibraryFile([{ paper: paper({ id: "d" }), savedAt: "2026-06-16T10:00:00.000Z" }, { paper: paper({ id: "d" }), savedAt: "2026-06-17T10:00:00.000Z" }]);
+      expect(parsed.entries).toHaveLength(1);
+      expect(parsed.repaired).toBe(1);
+    });
+  });
+
   it.each([null, undefined, "garbage", 7, {}, { entries: "no" }, { version: 2 }])("treats %j as an empty library", (raw) => {
     const parsed = parseLibraryFile(raw);
     expect(parsed.entries).toEqual([]);
@@ -361,12 +410,14 @@ describe("addPapers", () => {
     expect(out.data.entries[1].paper.abstract).toBeNull();
   });
 
-  it("prefers the earliest entry even when a later one matches by id", () => {
+  it("an exact id match is the record, even when an earlier entry shares the title", () => {
     const T = "A rather long title that is distinctive enough to match on";
     const entries = [entry({ paper: paper({ id: "file-one", title: T }) }), entry({ paper: paper({ id: "file-two", title: T }) })];
     const probe = paper({ id: "file-two", title: T });
-    expect(findEntryIndex(entries, probe)).toBe(0);
-    expect(addPapers({ ...empty(), entries }, [probe], 9).ids).toEqual(["file-one"]);
+    expect(findEntryIndex(entries, probe)).toBe(1);
+    const out = addPapers({ ...empty(), entries }, [probe], 9);
+    expect(out.ids).toEqual(["file-two"]);
+    expect(out.merged).toBe(1);
   });
 
   it("does not modify the data it was given", () => {
@@ -392,6 +443,20 @@ describe("findEntryIndex and the identity keys it remembers", () => {
   it("still finds the same entry on repeated asks", () => {
     const entries = [entry({ paper: paper({ id: "a", doi: "10.1000/x" }) })];
     for (let i = 0; i < 3; i++) expect(findEntryIndex(entries, paper({ id: "zz", doi: "10.1000/x" }))).toBe(0);
+  });
+});
+
+describe("findEntryIndex: same-title entries keep their own identity", () => {
+  const T = "A rather long title that is distinctive enough to match on";
+  const entries = [entry({ paper: paper({ id: "local:A", title: T }) }), entry({ paper: paper({ id: "local:B", title: T }) })];
+
+  it("each entry resolves to itself", () => {
+    expect(findEntryIndex(entries, entries[0].paper)).toBe(0);
+    expect(findEntryIndex(entries, entries[1].paper)).toBe(1);
+  });
+
+  it("a paper with another id and the same title resolves to the first", () => {
+    expect(findEntryIndex(entries, paper({ id: "s2:x", title: T }))).toBe(0);
   });
 });
 
