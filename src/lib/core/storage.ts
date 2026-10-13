@@ -60,15 +60,22 @@ export function saveJson(file: string, key: string, value: unknown): Promise<voi
   return queued;
 }
 
-/** The pre-layouts (v0.1) single-workspace record, read once for migration. */
-export async function loadLegacyWorkspace<T>(): Promise<T | null> {
-  if (inTauri()) {
-    return loadJson<T>("workspace.json", "workspace");
-  }
+/**
+ * A store the library has since replaced (queue.json, annotations.json), as the old code
+ * left it: the same file and key inside Tauri, the bare key in a plain browser. Read
+ * once by the library's migration; never written or deleted.
+ */
+export async function loadLegacy<T>(file: string, key: string): Promise<T | null> {
+  if (inTauri()) return loadJson<T>(file, key);
   try {
-    const raw = localStorage.getItem("workspace");
+    const raw = localStorage.getItem(key);
     return raw ? (JSON.parse(raw) as T) : null;
   } catch {
     return null;
   }
+}
+
+/** The pre-layouts (v0.1) single-workspace record, read once for migration. */
+export function loadLegacyWorkspace<T>(): Promise<T | null> {
+  return loadLegacy<T>("workspace.json", "workspace");
 }

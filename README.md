@@ -18,11 +18,11 @@ is built as a set of modules you can rearrange — or extend with your own.
 | 🔎 **Paper Search** | Searches Semantic Scholar, OpenAlex and arXiv together, merges duplicates, filters by year / citations / open access, sorts by relevance, citations or date. |
 | 📖 **Reader** | Overview (abstract, TL;DR) plus an in-app PDF viewer. Opens open-access PDFs, your own PDFs, and markdown notes. |
 | 🧠 **AI Brief** | Turns the current search results (or your library) into a cited “state of the field” briefing. Claude, OpenAI, OpenRouter, Ollama, LM Studio, or any OpenAI-compatible server. |
-| 📚 **Library** | Papers you saved, PDFs and markdown you dropped in, BibTeX you imported. |
+| 📚 **Library** | Papers you saved, PDFs and markdown you dropped in, BibTeX you imported — each with a reading status and tags you can filter by. |
 | 📝 **Notes** | Markdown notes in a CodeMirror editor (optional **Vim mode** under ⚙ Settings) with live preview (raw HTML is shown as text, never run). |
-| ✏️ **Annotations** | Notes per paper: select a paper and write about it; they persist across sessions and travel with an export. |
-| 📋 **Reading Queue** | Move papers through To Read → Reading → Done. |
-| ↗ **Export** | Writes your library as BibTeX, Markdown or JSON, with your annotations. |
+| ✏️ **Annotations** | A markdown note per paper: select a paper (save it first) and write about it. The note lives on the paper's library entry, persists across sessions and travels with an export. |
+| 📋 **Reading Queue** | Move papers through To Read → Reading → Done. Queueing a paper also saves it to your library. |
+| ↗ **Export** | Writes your library as BibTeX, Markdown or JSON, with each paper's status, tags and (optionally) note. |
 | 🍅 **Pomodoro**, 🐞 **Debug** | A focus timer; a live view of the event bus. |
 
 Everything sits on a drag-and-resize dashboard. Save arrangements as **named
@@ -103,6 +103,11 @@ makes its network requests from Rust (no CORS) and a browser cannot:
    the cited paper; **Copy markdown** / **Save .md** export it with its sources.
 5. **Drop** PDFs, markdown notes, a `.bib` file or a layout file anywhere on the
    window to import them.
+6. Keep track of what you read. **+ Queue** in the Reading Queue saves the
+   selected paper and puts it in *To Read*; the Library shows the same status
+   on each row (change it there or in the Queue), plus **tags** — type one and
+   press Enter, or paste a comma-separated list — and filters by status
+   (including *Not queued*) and by tag.
 
 ## AI setup
 
@@ -167,9 +172,47 @@ your own copy. Limits: PDFs up to 150 MB, text files up to 8 MB.
 Where things live: metadata in `library.json` in the app-data folder; file
 contents in the webview's IndexedDB. That means the files are **not** loose
 files you can browse, and clearing the app's web storage removes them. The
-**Export** module writes the library's metadata and your annotations as BibTeX,
-Markdown or JSON; exporting the stored files themselves is on the
-[ideas list](docs/IDEAS.md).
+**Export** module writes the library's metadata, statuses, tags and (if you
+leave "Include annotations" ticked) notes as BibTeX, Markdown or JSON;
+exporting the stored files themselves is on the [ideas list](docs/IDEAS.md).
+
+### One record per paper
+
+The library entry is *the* record for a paper. Its reading status, tags and
+note live on it, so the same paper found through Semantic Scholar, OpenAlex,
+arXiv or a BibTeX import shows one status, one set of tags and one note
+everywhere. Papers are recognised as the same by DOI, arXiv id or title.
+
+- **Removing a paper** from the library removes its tags and reading status.
+  Its **note is kept** and comes back if you save the same paper again (the
+  Annotations module tells you when one is waiting). A note is matched by the
+  paper's id, so saving the paper again from a *different* source (another id)
+  does not bring it back; it stays in `library.json` under `orphanNotes`.
+- Two files with the same title (say two versions of a PDF) stay two records:
+  a note, status or tag set on one never lands on the other.
+- **Upgrading.** The first launch of this version imports your old Reading
+  Queue and annotations into the library: queued papers are saved with their
+  status, and each note goes to the paper it was written for. The old
+  `queue.json` / `annotations.json` files (or, in a browser, the `queue` /
+  `annotations` entries) are **never changed or deleted**, and are not read
+  again once imported. If your old queue held the same paper twice under
+  different ids, the more advanced status wins (Done over Reading over To
+  Read). `library.json` becomes version 2 on that launch; an
+  older build can still read it but will not know about status, tags and notes
+  and would drop them if it saved the library.
+- If `library.json` holds something the app cannot read exactly as it is —
+  damaged entries, a status, tag or note it does not understand, a file written
+  by a newer version, or a paper listed twice — you are told how many items are
+  affected, and **a copy of the original file is kept** (under the key
+  `library.backup` in the same store file) before the repaired library is ever
+  written over it. If that copy cannot be made, the library is not saved at all
+  until it can be, so the original is never overwritten without a copy.
+- Anything in the old queue or annotations stores that could not be imported
+  (an item that is not a paper, a note that is not text) is counted and
+  reported; the old files stay as they were.
+- If saving the library fails (disk full, a locked file) you are told once and
+  the app retries by itself, after 5 seconds and then at growing intervals up
+  to a minute, until it works.
 
 ## Layouts
 
@@ -199,7 +242,7 @@ layouts switches your whole workspace.
 | Paper sources | Semantic Scholar, OpenAlex, arXiv and your local Zotero behind one `PaperSource` interface; a federated layer merges, ranks, filters and sorts |
 | Editor | CodeMirror 6 for notes and annotations, with optional Vim keybindings (`@replit/codemirror-vim`) |
 | AI | `LlmProvider` interface: Anthropic (official SDK) and OpenAI-compatible REST (SSE streaming) |
-| Storage | JSON files via the Tauri store plugin (layouts, library metadata, AI profiles) and IndexedDB (file contents) |
+| Storage | JSON files via the Tauri store plugin (layouts, library metadata incl. status/tags/notes, AI profiles) and IndexedDB (file contents) |
 | Untrusted text | LLM output and dropped markdown go through a sanitising renderer: raw HTML escaped, images and non-web links dropped |
 | PDFs | pdf.js, using its “legacy” build so older WebKitGTK / WebView2 / WKWebView versions work |
 
@@ -266,28 +309,37 @@ npm run dev            # browser only
 npm run check          # svelte-check / TypeScript
 npm test               # vitest
 npm run build          # static frontend into ./build
+npm run check:tauri-parity   # npm @tauri-apps/* and Rust tauri* crates on the same minor (Node ≥ 22.6)
 npm run tauri build    # packaged installer for your OS
 ```
+
+CI (`.github/workflows/ci.yml`) runs check, test, build, `npm audit --omit=dev
+--audit-level=high` and the Tauri parity check on every push and pull request,
+and `cargo check --locked` in a second job. `CLAUDE.md` holds the
+architecture rules and guardrails for coding-assistant sessions.
 
 ### Project layout
 
 ```
-src/lib/core/        registry, event bus, grid maths, workspace + layouts, library, importer, storage, net, markdown, annotations, queue, exporters, settings, zen
+src/lib/core/        registry, event bus, grid maths, workspace + layouts, library, importer, storage, net, markdown, exporters, settings, zen
 src/lib/components/  Dashboard, ModuleFrame, ModulePicker, LayoutMenu, SettingsMenu, DropOverlay, Toasts, Markdown, Editor
 src/lib/modules/     one folder per module (search, reader, synthesis, library, annotations, queue, notes, pomodoro, export, debug)
 src/lib/sources/     paper-source adapters, merge/rank logic, federated search
 src/lib/ai/          LlmProvider interface, Anthropic + OpenAI-compatible providers, SSE parser, prompt builder
-src/lib/library/     BibTeX parser, file-type helpers, library search
+src/lib/library/     the library record (model, migrations, queue rules), BibTeX parser, file-type helpers, library search
 src-tauri/           Rust shell (plugins, capabilities, window config)
-docs/                ideas and design notes
+scripts/             repo tooling (the Tauri version-parity check)
+docs/                ideas, plans and design notes
 ```
 
 ### Tests
 
-`npm test` runs ~490 unit tests: parsers (BibTeX, arXiv Atom, SSE), merge and
-ranking logic, layout validation and migration, both LLM providers against
-mocked streams, the library exporters and the Zotero adapter, and the markdown
-sanitiser against common XSS vectors. The
+`npm test` runs ~720 unit tests: parsers (BibTeX, arXiv Atom, SSE), merge and
+ranking logic, layout validation and migration, the library record (formats,
+migrations from the old queue and annotations, tags, write failures), both LLM
+providers against mocked streams, the library exporters and the Zotero adapter,
+the Tauri version-parity check, and the markdown sanitiser against common XSS
+vectors. The
 external APIs are exercised only through fixtures, so a real search or model
 call is the thing to try after changing an adapter.
 
@@ -309,8 +361,9 @@ Semantic Scholar + OpenAlex + arXiv search with merge/filters; the Reader
 (open-access, local PDFs, markdown); cited AI briefs from Claude or any
 OpenAI-compatible model; a local library with drag-and-drop and BibTeX import;
 Zotero search; notes (CodeMirror, optional Vim mode), annotations, a reading
-queue, library export (BibTeX / Markdown / JSON), focus mode, pomodoro and
-debug modules. Not built yet: chat with a paper, a citation graph, exporting
+queue, library export (BibTeX / Markdown / JSON), one record per paper (status,
+tags and notes live on the library entry), focus mode, pomodoro and debug
+modules. Not built yet: chat with a paper, a citation graph, exporting
 the stored files, direct DOI / arXiv-id lookup, and a
 stricter content-security policy for the webview. Feedback and ideas welcome
 via issues.

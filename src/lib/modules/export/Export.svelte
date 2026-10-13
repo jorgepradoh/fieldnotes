@@ -1,6 +1,5 @@
 <script lang="ts">
   import { library } from "$lib/core/library.svelte";
-  import { annotations } from "$lib/core/annotations.svelte";
   import { toBibTeX, toMarkdown, toJSON } from "$lib/core/exporters";
   import { saveTextFile } from "$lib/core/files";
   import type { ModuleInstance } from "$lib/core/types";
@@ -14,9 +13,7 @@
   let status = $state<"idle" | "saving" | "done" | "error">("idle");
   let message = $state("");
 
-  const annotatedCount = $derived(
-    library.entries.filter((e) => !!annotations.get(e.paper.id)).length,
-  );
+  const annotatedCount = $derived(library.entries.filter((e) => !!e.note).length);
 
   const EXT: Record<Format, string> = { bibtex: "bib", markdown: "md", json: "json" };
   const LABEL: Record<Format, string> = {
@@ -31,15 +28,13 @@
     message = "";
 
     try {
-      const noteMap = includeAnnotations
-        ? (annotations.notes as Record<string, string>)
-        : {};
       const entries = library.entries;
+      const options = { notes: includeAnnotations };
 
       let content: string;
-      if (format === "bibtex") content = toBibTeX(entries, noteMap);
-      else if (format === "markdown") content = toMarkdown(entries, noteMap);
-      else content = toJSON(entries, noteMap);
+      if (format === "bibtex") content = toBibTeX(entries, options);
+      else if (format === "markdown") content = toMarkdown(entries, options);
+      else content = toJSON(entries, options);
 
       const result = await saveTextFile(`research-library.${EXT[format]}`, content);
       if (result === "cancelled") { status = "idle"; return; }

@@ -1,6 +1,10 @@
-import type { LibraryEntry } from "./library.svelte";
+import type { LibraryEntry } from "../library/model";
+import { STATUS_LABEL } from "../library/queue";
 
-type AnnotationMap = Record<string, string>;
+export interface ExportOptions {
+  /** Include each paper's note. Status and tags are always exported. */
+  notes: boolean;
+}
 
 // ── BibTeX key generation ──────────────────────────────────────────────────
 
@@ -32,7 +36,7 @@ function formatBibAuthors(authors: string[]): string {
   return authors.map((a) => escapeBib(a)).join(" and ");
 }
 
-function paperToBibTeX(entry: LibraryEntry, annotation?: string): string {
+function paperToBibTeX(entry: LibraryEntry, opts: ExportOptions): string {
   const { paper } = entry;
   const key = bibKey(entry);
   const hasAuthorsAndYear = paper.authors.length > 0 && paper.year != null;
@@ -53,19 +57,20 @@ function paperToBibTeX(entry: LibraryEntry, annotation?: string): string {
     if (paper.venue) fields.push(["primaryClass", `{${escapeBib(paper.venue)}}`]);
   }
   if (paper.url) fields.push(["url", `{${escapeBib(paper.url)}}`]);
-  if (annotation) fields.push(["annote", `{${escapeBib(annotation)}}`]);
+  if (entry.tags?.length) fields.push(["keywords", `{${entry.tags.map(escapeBib).join(", ")}}`]);
+  if (opts.notes && entry.note) fields.push(["annote", `{${escapeBib(entry.note)}}`]);
 
   const body = fields.map(([k, v]) => `  ${k} = ${v}`).join(",\n");
   return `@${type}{${key},\n${body}\n}`;
 }
 
-export function toBibTeX(entries: LibraryEntry[], annotations: AnnotationMap): string {
-  return entries.map((e) => paperToBibTeX(e, annotations[e.paper.id])).join("\n\n");
+export function toBibTeX(entries: LibraryEntry[], opts: ExportOptions): string {
+  return entries.map((e) => paperToBibTeX(e, opts)).join("\n\n");
 }
 
 // ── Markdown serializer ────────────────────────────────────────────────────
 
-function paperToMarkdown(entry: LibraryEntry, annotation?: string): string {
+function paperToMarkdown(entry: LibraryEntry, opts: ExportOptions): string {
   const { paper } = entry;
   const lines: string[] = [`## ${paper.title}`, ""];
   if (paper.authors.length > 0) lines.push(`**Authors:** ${paper.authors.join("; ")}  `);
@@ -74,29 +79,38 @@ function paperToMarkdown(entry: LibraryEntry, annotation?: string): string {
   if (paper.doi) lines.push(`**DOI:** ${paper.doi}  `);
   if (paper.arxivId) lines.push(`**arXiv:** ${paper.arxivId}  `);
   if (paper.url) lines.push(`**URL:** <${paper.url}>  `);
+  if (entry.status) lines.push(`**Status:** ${STATUS_LABEL[entry.status]}  `);
+  if (entry.tags?.length) lines.push(`**Tags:** ${entry.tags.join(", ")}  `);
   if (paper.abstract) {
     lines.push("", "### Abstract", "", paper.abstract);
   }
-  if (annotation) {
-    lines.push("", "### Notes", "", annotation);
+  if (opts.notes && entry.note) {
+    lines.push("", "### Notes", "", entry.note);
   }
   return lines.join("\n");
 }
 
-export function toMarkdown(entries: LibraryEntry[], annotations: AnnotationMap): string {
+export function toMarkdown(entries: LibraryEntry[], opts: ExportOptions): string {
   const date = new Date().toISOString().slice(0, 10);
   const header = `# Research Library Export\n*Generated: ${date} · ${entries.length} paper${entries.length === 1 ? "" : "s"}*`;
-  const body = entries.map((e) => paperToMarkdown(e, annotations[e.paper.id])).join("\n\n---\n\n");
+  const body = entries.map((e) => paperToMarkdown(e, opts)).join("\n\n---\n\n");
   return `${header}\n\n---\n\n${body}\n`;
 }
 
 // ── JSON serializer ────────────────────────────────────────────────────────
 
-export function toJSON(entries: LibraryEntry[], annotations: AnnotationMap): string {
-  const payload = entries.map((e) => ({
-    paper: e.paper,
-    savedAt: new Date(e.addedAt).toISOString(),
-    annotation: annotations[e.paper.id] ?? "",
-  }));
+export function toJSON(entries: LibraryEntry[], opts: ExportOptions): string {
+  const payload = entries.map((e) => {
+    const note = opts.notes ? (e.note ?? "") : "";
+    return {
+      paper: e.paper,
+      savedAt: new Date(e.addedAt).toISOString(),
+      status: e.status ?? null,
+      tags: e.tags ?? [],
+      note,
+      // The field the first version of the export used; same text as `note`.
+      annotation: note,
+    };
+  });
   return JSON.stringify(payload, null, 2);
 }

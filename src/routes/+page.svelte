@@ -6,9 +6,7 @@
   import ModulePicker from "$lib/components/ModulePicker.svelte";
   import SettingsMenu from "$lib/components/SettingsMenu.svelte";
   import Toasts from "$lib/components/Toasts.svelte";
-  import { annotations } from "$lib/core/annotations.svelte";
   import { library } from "$lib/core/library.svelte";
-  import { queue } from "$lib/core/queue.svelte";
   import { settings } from "$lib/core/settings.svelte";
   import { workspace } from "$lib/core/workspace.svelte";
   import { zen } from "$lib/core/zen.svelte";
@@ -27,8 +25,6 @@
   onMount(() => {
     loadOrReport("workspace", workspace.load());
     loadOrReport("library", library.ensureLoaded());
-    loadOrReport("annotations", annotations.load());
-    loadOrReport("queue", queue.load());
     loadOrReport("settings", settings.load());
   });
 
